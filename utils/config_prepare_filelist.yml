@@ -1,0 +1,3 @@
+ground_truth_path: "/data/leonardo/OMGEmotionChallenge/omg_ValidationVideos.csv"
+data_path: "/data/leonardo/OMGEmotionChallenge/Validation_Set/trimmed_faces"
+output_name: validation_list_lstm.txt
