@@ -4,6 +4,7 @@ import argparse
 import csv
 import os
 import sys
+from typing import Tuple
 
 import numpy
 import pandas
@@ -40,7 +41,7 @@ def ccc(y_true, y_pred):
 
 
 
-def calculateCCC(validationFile, modelOutputFile):
+def calculateCCC(validationFile, modelOutputFile) -> Tuple[float, float]:
 
 
     dataY = pandas.read_csv(validationFile, header=0, sep=",")
@@ -63,6 +64,7 @@ def calculateCCC(validationFile, modelOutputFile):
     print ("Valence CCC: ", valenceCCC)
     print ("Valence cor: ", vcor)
     print ("Valence MSE: ", valencemse)
+    return arousalCCC, valenceCCC
 
 
 if __name__ == "__main__":

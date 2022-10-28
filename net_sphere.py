@@ -149,6 +149,7 @@ class sphere20a(nn.Module):
         self.conv4_3 = nn.Conv2d(512,512,3,1,1)
         self.relu4_3 = nn.PReLU(512)
 
+        # 131072
         self.fc5 = nn.Linear(512*7*6,512)
         self.fc6 = AngleLinear(512,self.classnum)
 

@@ -19,7 +19,7 @@ def load_config(path: str = "repeat_src/run/config_dan_fcn.yml") -> Dict[str, An
 
 @get_execution_time_print
 def create_img_list(row: Series, data_path: str) -> str:
-    video, utterance = row
+    video, utterance = row[:2]
     img_list = glob(join_paths(data_path, video, utterance, "*.png"))
     img_list = [el.split("/")[-1].split(".")[0] for el in img_list]
     return ",".join(img_list)
@@ -37,7 +37,7 @@ def main():
     # NOTE: I could have also used used [: -4] to remove the last 4 characters
     data["utterance"] = data["utterance"].apply(lambda x: x.split(".")[0])
     # NOTE: selecting only video and utterance columns
-    data = data.iloc[:, 3:5]
+    data = data.iloc[:, 3:7]
 
     data["img_list"] = data.apply(create_img_list, axis=1, args=(configs["data_path"],))
     output_path: str = join_paths("support_tables/", configs["output_name"])
