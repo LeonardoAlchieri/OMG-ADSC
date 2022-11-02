@@ -6,6 +6,7 @@ import os
 import sys
 from typing import Tuple
 
+import torch
 import numpy
 import pandas
 from scipy.stats import pearsonr
@@ -24,27 +25,29 @@ def f1(y_true, y_pred):
     return f1_score(y_true, y_pred, labels=label, average="micro")
 
 
-def ccc(y_true, y_pred):
-    true_mean = numpy.mean(y_true)
-    true_variance = numpy.var(y_true)
-    pred_mean = numpy.mean(y_pred)
-    pred_variance = numpy.var(y_pred)
+def ccc(input, target):
+    # I have to force to tensors
+    input = torch.Tensor(input)
+    target = torch.Tensor(target)
 
-    rho, _ = pearsonr(y_pred, y_true)
-
-    std_predictions = numpy.std(y_pred)
-
-    std_gt = numpy.std(y_true)
-
+    vx = input - torch.mean(input)
+    vy = target - torch.mean(target)
+    rho = torch.sum(vx * vy) / (
+        torch.sqrt(torch.sum(torch.pow(vx, 2)))
+        * torch.sqrt(torch.sum(torch.pow(vy, 2)))
+    )
+    x_m = torch.mean(input)
+    y_m = torch.mean(target)
+    x_s = torch.std(input)
+    y_s = torch.std(target)
     ccc = (
         2
         * rho
-        * std_gt
-        * std_predictions
-        / (std_predictions**2 + std_gt**2 + (pred_mean - true_mean) ** 2)
+        * x_s
+        * y_s
+        / (torch.pow(x_s, 2) + torch.pow(y_s, 2) + torch.pow(x_m - y_m, 2))
     )
-
-    return ccc, rho
+    return ccc
 
 
 def calculateCCC(validationFile, modelOutputFile) -> Tuple[float, float]:
@@ -58,16 +61,14 @@ def calculateCCC(validationFile, modelOutputFile) -> Tuple[float, float]:
     dataYPredArousal = dataYPred["arousal"]
     dataYPredValence = dataYPred["valence"]
 
-    arousalCCC, acor = ccc(dataYArousal, dataYPredArousal)
+    arousalCCC = ccc(dataYArousal, dataYPredArousal)
     arousalmse = mse(dataYArousal, dataYPredArousal)
-    valenceCCC, vcor = ccc(dataYValence, dataYPredValence)
+    valenceCCC = ccc(dataYValence, dataYPredValence)
     valencemse = mse(dataYValence, dataYPredValence)
 
     print("Arousal CCC: ", arousalCCC)
-    print("Arousal Pearson Cor: ", acor)
     print("Arousal MSE: ", arousalmse)
     print("Valence CCC: ", valenceCCC)
-    print("Valence cor: ", vcor)
     print("Valence MSE: ", valencemse)
     return arousalCCC, valenceCCC
 

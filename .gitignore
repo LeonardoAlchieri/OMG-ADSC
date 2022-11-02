@@ -1,6 +1,8 @@
 logs/
 model/
 support_tables/
+pth*/
+results*/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

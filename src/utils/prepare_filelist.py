@@ -41,9 +41,7 @@ def main():
 
     data["img_list"] = data.apply(create_img_list, axis=1, args=(configs["data_path"],))
     output_path: str = join_paths("support_tables/", configs["output_name"])
-    data.to_csv(
-        output_path, index=True, sep=" "
-    )
+    data.to_csv(output_path, index=True, sep=" ")
     print(f"File saved at {output_path}")
 
 

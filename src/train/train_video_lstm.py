@@ -22,8 +22,8 @@ from calculateEvaluationCCC_ours import calculateCCC
 # FIXME: these should not be hardcoded
 # Define parameters
 use_cuda: bool = torch.cuda.is_available()
-use_mps: bool = torch.backends.mps.is_available()
-# use_mps = False
+# use_mps: bool = torch.backends.mps.is_available()
+use_mps = False
 
 lr = 0.01
 bs = 32
@@ -164,7 +164,7 @@ def validate(val_loader, model, criterion, epoch):
     err_arou = 0.0
     err_vale = 0.0
 
-    txt_result = open("results_ourccc2/val_lstm_%d.csv" % epoch, "w")
+    txt_result = open("results_ourcc/val_lstm_%d.csv" % epoch, "w")
     txt_result.write("video,utterance,arousal,valence\n")
     for (inputs, targets, (vid, utter)) in tqdm(val_loader, "Validation batch"):
         inputs: Tensor
@@ -195,7 +195,8 @@ def validate(val_loader, model, criterion, epoch):
     txt_result.close()
 
     arouCCC, valeCCC = calculateCCC(
-        "./results_ourccc2/omg_ValidationVideos.csv", "results_ourccc2/val_lstm_%d.csv" % epoch
+        "./results_ourcc/omg_ValidationVideos.csv",
+        "results_ourcc/val_lstm_%d.csv" % epoch,
     )
     return (arouCCC, valeCCC)
 
@@ -317,7 +318,11 @@ if __name__ == "__main__":
                 best_vale_ccc = vale_ccc
                 save_model(
                     model,
-                    "./pth_ourccc2/model_lstm_{}_{}_{}.pth".format(
-                        epoch, round(arou_ccc, 4), round(vale_ccc, 4)
+                    (
+                        "./pth_ourcc/model_lstm_%s_%.4f_%.4f.pth"
+                        % (epoch, arou_ccc, vale_ccc)
                     ),
+                    # "./pth_ourcc/model_lstm_{}_{}_{}.pth".format(
+                    #     epoch, round(arou_ccc, 4), round(vale_ccc, 4)
+                    # ),
                 )
