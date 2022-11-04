@@ -3,6 +3,7 @@ model/
 support_tables/
 pth*/
 results*/
+.DS_Store
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

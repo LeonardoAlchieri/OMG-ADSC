@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.optim as optim
+from torch import nn
 from numpy.random import randint
 from skimage import io
 from skimage.transform import resize
@@ -18,6 +19,10 @@ from tqdm import tqdm
 path.append("./")
 import net_sphere
 from calculateEvaluationCCC import calculateCCC
+from src.utils.models import Transformer, conv1x1, BasicBlock
+from src.utils import load_backbone_weight
+import src.models.backbones as backbones
+import src.models.temporal_aggregators as t_aggr
 
 # FIXME: these should not be hardcoded
 # Define parameters
@@ -34,59 +39,54 @@ gd = 20  # clip gradient
 eval_freq = 3
 print_freq = 20
 num_worker = 4
-num_seg = 16 # this is the number of randomly sampled frames to be considered for training, for each video
+num_seg = 16
 flag_biLSTM = True
 
 classnum = 7
-correct_img_size = (112, 96, 3)
+correct_img_size = (112, 112, 3)
 
-
-class Net(torch.nn.Module):
-    def __init__(self, sphereface):
+class Net(nn.Module):
+    def __init__(self, config, loading_device: str = 'cuda'):
         super(Net, self).__init__()
-        self.sphereface = sphereface
-        self.linear = torch.nn.Linear(512, 2)
-        self.tanh = torch.nn.Tanh()
-        self.avgPool = torch.nn.AvgPool2d((num_seg, 1), stride=1)
-        self.LSTM = torch.nn.LSTM(
-            512, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
-        )  # Input dim, hidden dim, num_layer
-        for name, param in self.LSTM.named_parameters():
-            if "bias" in name:
-                torch.nn.init.constant(param, 0.0)
-            elif "weight" in name:
-                torch.nn.init.orthogonal(param)
+        self.backbone: nn.Module = backbones.__dict__[config["visual"]["backbone"]](loading_device=loading_device)
 
-    def sequentialLSTM(self, input, hidden=None):
-
-        input_lstm = input.view([-1, num_seg, input.shape[1]])
-        batch_size = input_lstm.shape[0]
-        feature_size = input_lstm.shape[2]
-
-        self.LSTM.flatten_parameters()
-
-        output_lstm, hidden = self.LSTM(input_lstm)
-        if flag_biLSTM:
-            output_lstm = (
-                output_lstm.contiguous()
-                .view(batch_size, output_lstm.size(1), 2, -1)
-                .sum(2)
-                .view(batch_size, output_lstm.size(1), -1)
+        if config["visual"].get("backbone_weights", None):
+            print(f'** Loading pre-trained weight locally')
+            self.backbone.load_state_dict(
+                load_backbone_weight(config["visual"]["backbone_weights"],loading_device=loading_device),
+                strict=config["visual"].get("backbone_weights_strict", True),
             )
 
-        # avarage the output of LSTM
-        output_lstm = output_lstm.view(batch_size, 1, num_seg, -1)
-        out = self.avgPool(output_lstm)
-        out = out.view(batch_size, -1)
-        return out
+        self.t_aggr = t_aggr.__dict__[config["visual"]["temporal_aggregator"]]()
+        self.head_expr = nn.Sequential(
+            nn.Linear(512, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Linear(128, config['num_expr_labels']),
+        )
+
+        self.head_va = nn.Sequential(
+            nn.Linear(512, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Linear(128, config['num_va_labels']),
+        )
+        if config["visual"]["late_fusion"] == "mean":
+            self.late_fusion = torch.mean
+        elif config["visual"]["late_fusion"] == "max":
+            self.late_fusion = torch.max
+        elif config["visual"]["late_fusion"] == "min":
+            self.late_fusion = torch.min
+        elif config["visual"]["late_fusion"] == "none":
+            self.late_fusion = lambda x, y: x
 
     def forward(self, x):
-        x = self.sphereface(x)
-        x = self.sequentialLSTM(x)
-        x = self.linear(x)
-        x = self.tanh(x)
+        x = self.backbone(x)
+        x = self.t_aggr(x)
+        y_expr = self.late_fusion(self.head_expr(x), 1)
+        y_va = self.late_fusion(self.head_va(x), 1)
+        return y_va, y_expr
 
-        return x
 
 
 def printoneline(*argv):
@@ -131,8 +131,10 @@ def train(train_loader, model, criterion, optimizer, epoch):
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
 
-        inputs = inputs.view((-1, 3) + inputs.size()[-2:])
-        outputs = model(inputs)
+        # inputs = inputs.view((-1, 3) + inputs.size()[-2:])
+        # NOTE: added for way resnet wants shape 
+        inputs = inputs.reshape(inputs.shape[0], -1, 3, inputs.shape[-2], inputs.shape[-1])
+        outputs = model(inputs)[0]
 
         loss = criterion(outputs, targets)
 
@@ -164,7 +166,7 @@ def validate(val_loader, model, criterion, epoch):
     err_arou = 0.0
     err_vale = 0.0
 
-    txt_result = open("results_ourcc/val_lstm_%d.csv" % epoch, "w")
+    txt_result = open("results/val_spatial_transformer_%d.csv" % epoch, "w")
     txt_result.write("video,utterance,arousal,valence\n")
     for (inputs, targets, (vid, utter)) in tqdm(val_loader, "Validation batch"):
         inputs: Tensor
@@ -177,8 +179,10 @@ def validate(val_loader, model, criterion, epoch):
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
 
-        inputs = inputs.view((-1, 3) + inputs.size()[-2:])
-        outputs = model(inputs)
+        # inputs = inputs.view((-1, 3) + inputs.size()[-2:])
+        # NOTE: added for way resnet wants shape 
+        inputs = inputs.reshape(inputs.shape[0], -1, 3, inputs.shape[-2], inputs.shape[-1])
+        outputs = model(inputs)[0]
 
         outputs = outputs.data.cpu().numpy()
         targets = targets.data.cpu().numpy()
@@ -195,8 +199,8 @@ def validate(val_loader, model, criterion, epoch):
     txt_result.close()
 
     arouCCC, valeCCC = calculateCCC(
-        "./results_ourcc/omg_ValidationVideos.csv",
-        "results_ourcc/val_lstm_%d.csv" % epoch,
+        "./results/omg_ValidationVideos.csv",
+        "results/val_spatial_transformer_%d.csv" % epoch,
     )
     return (arouCCC, valeCCC)
 
@@ -263,18 +267,39 @@ if __name__ == "__main__":
 
     train_list_path = "./support_tables/train_list_lstm.txt"
     val_list_path = "./support_tables/validation_list_lstm.txt"
-    model_path = "./model/sphere20a_20171020.pth"
+    # model_path = "./model/sphere20a_20171020.pth"
     train_data_path: str = (
         "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Train_Set/trimmed_faces"
     )
     validation_data_path: str = "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Validation_Set/trimmed_faces"
-    sphereface = getattr(net_sphere, "sphere20a")()
-    sphereface.load_state_dict(torch.load(model_path))
-    sphereface.feature = (
-        True  # remove the last fc layer because we need to use LSTM first
+    
+    ## Model configs
+    digitize_num = 1
+    model_configs = dict(
+        num_expr_labels=7,
+        num_va_labels=digitize_num * 2,
+        visual=dict(
+            backbone='spatial_transformer',
+            # backbone="facebval",
+            # backbone_weights="./backbone_checkpoints/faceBVAL.pth.tar",
+            # backbone_weights_strict=False,
+            temporal_aggregator="Identity", # TODO: figure out which values I can use here
+            late_fusion="mean",
+        ),
     )
-
-    model = Net(sphereface)
+    # sphereface = getattr(net_sphere, "sphere20a")()
+    # sphereface.load_state_dict(torch.load(model_path))
+    # sphereface.feature = (
+    #     True  # remove the last fc layer because we need to use LSTM first
+    # )
+    if use_cuda:
+        device = torch.device("cuda")
+    elif use_mps:
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+    
+    model = Net(model_configs, loading_device=device)
 
     if use_cuda:
         model.cuda()
@@ -319,7 +344,7 @@ if __name__ == "__main__":
                 save_model(
                     model,
                     (
-                        "./pth_ourcc/model_lstm_%s_%.4f_%.4f.pth"
+                        "./pth/model_spatial_transformers_%s_%.4f_%.4f.pth"
                         % (epoch, arou_ccc, vale_ccc)
                     ),
                     # "./pth_ourcc/model_lstm_{}_{}_{}.pth".format(

@@ -16,7 +16,8 @@ from torch import Tensor
 from tqdm import tqdm
 
 path.append("./")
-import net_sphere
+from src.models.backbones import facebval
+from src.utils import load_backbone_weight
 from calculateEvaluationCCC import calculateCCC
 
 # FIXME: these should not be hardcoded
@@ -34,22 +35,22 @@ gd = 20  # clip gradient
 eval_freq = 3
 print_freq = 20
 num_worker = 4
-num_seg = 16 # this is the number of randomly sampled frames to be considered for training, for each video
+num_seg = 16
 flag_biLSTM = True
 
 classnum = 7
-correct_img_size = (112, 96, 3)
+correct_img_size = (112, 112, 3)
 
 
 class Net(torch.nn.Module):
-    def __init__(self, sphereface):
+    def __init__(self, backbone):
         super(Net, self).__init__()
-        self.sphereface = sphereface
+        self.backbone = backbone
         self.linear = torch.nn.Linear(512, 2)
         self.tanh = torch.nn.Tanh()
         self.avgPool = torch.nn.AvgPool2d((num_seg, 1), stride=1)
         self.LSTM = torch.nn.LSTM(
-            512, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
+            2048, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
         )  # Input dim, hidden dim, num_layer
         for name, param in self.LSTM.named_parameters():
             if "bias" in name:
@@ -81,7 +82,7 @@ class Net(torch.nn.Module):
         return out
 
     def forward(self, x):
-        x = self.sphereface(x)
+        x = self.backbone(x)
         x = self.sequentialLSTM(x)
         x = self.linear(x)
         x = self.tanh(x)
@@ -131,7 +132,8 @@ def train(train_loader, model, criterion, optimizer, epoch):
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
 
-        inputs = inputs.view((-1, 3) + inputs.size()[-2:])
+        # NOTE: added for way resnet wants shape 
+        inputs = inputs.reshape(inputs.shape[0], -1, 3, inputs.shape[-2], inputs.shape[-1])
         outputs = model(inputs)
 
         loss = criterion(outputs, targets)
@@ -177,7 +179,8 @@ def validate(val_loader, model, criterion, epoch):
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
 
-        inputs = inputs.view((-1, 3) + inputs.size()[-2:])
+        # NOTE: added for way resnet wants shape 
+        inputs = inputs.reshape(inputs.shape[0], -1, 3, inputs.shape[-2], inputs.shape[-1])
         outputs = model(inputs)
 
         outputs = outputs.data.cpu().numpy()
@@ -263,18 +266,23 @@ if __name__ == "__main__":
 
     train_list_path = "./support_tables/train_list_lstm.txt"
     val_list_path = "./support_tables/validation_list_lstm.txt"
-    model_path = "./model/sphere20a_20171020.pth"
+    model_path = "./model/faceBVAL.pth.tar"
     train_data_path: str = (
         "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Train_Set/trimmed_faces"
     )
+    device: str = 'cuda' if use_cuda else ('mps' if use_mps else 'cpu')
     validation_data_path: str = "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Validation_Set/trimmed_faces"
-    sphereface = getattr(net_sphere, "sphere20a")()
-    sphereface.load_state_dict(torch.load(model_path))
-    sphereface.feature = (
-        True  # remove the last fc layer because we need to use LSTM first
-    )
+    backbone = facebval(loading_device=device)
+    backbone.load_state_dict(load_backbone_weight(weights_path=model_path, 
+                                                  loading_device=device),
+                             strict=False) # while should not be used, I tested and only the final prediction layers are indeed missing
+    # sphereface = getattr(net_sphere, "sphere20a")()
+    # sphereface.load_state_dict(torch.load(model_path))
+    # sphereface.feature = (
+    #     True  # remove the last fc layer because we need to use LSTM first
+    # )
 
-    model = Net(sphereface)
+    model = Net(backbone)
 
     if use_cuda:
         model.cuda()
