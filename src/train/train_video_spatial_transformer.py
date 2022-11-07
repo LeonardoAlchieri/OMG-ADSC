@@ -21,7 +21,7 @@ import net_sphere
 from calculateEvaluationCCC import calculateCCC
 from src.utils.models import Transformer, conv1x1, BasicBlock
 from src.utils import load_backbone_weight
-import src.models.backbones as backbones
+import models.our_backbones as our_backbones
 import src.models.temporal_aggregators as t_aggr
 
 # FIXME: these should not be hardcoded
@@ -48,7 +48,7 @@ correct_img_size = (112, 112, 3)
 class Net(nn.Module):
     def __init__(self, config, loading_device: str = 'cuda'):
         super(Net, self).__init__()
-        self.backbone: nn.Module = backbones.__dict__[config["visual"]["backbone"]](loading_device=loading_device)
+        self.backbone: nn.Module = our_backbones.__dict__[config["visual"]["backbone"]](loading_device=loading_device)
 
         if config["visual"].get("backbone_weights", None):
             print(f'** Loading pre-trained weight locally')

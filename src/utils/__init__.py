@@ -1,5 +1,8 @@
+from collections import OrderedDict
 from typing import Union
+
 from torch import load as load_weights
+
 
 def load_backbone_weight(
     weights_path: str, loading_device: str = "cuda"
@@ -25,9 +28,11 @@ def load_backbone_weight(
             state_dict: dict = checkpoint["state_dict"]
         elif "model_state_dict" in checkpoint.keys():
             state_dict: dict = checkpoint["model_state_dict"]
+        elif all(["module" in el for el in list(checkpoint.keys())]):
+            state_dict: dict = {key[7:]: val for key, val in checkpoint.items()}
         else:
             state_dict = checkpoint
-            print("No state_dict or model_state_dict found in weights file")
+            print("No state_dict, model_state_dict or 'module' problem found in weights file")
 
         return state_dict
     else:

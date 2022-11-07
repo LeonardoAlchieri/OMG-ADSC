@@ -19,6 +19,7 @@ path.append("./")
 from models.our_backbones import facebval
 from src.utils import load_backbone_weight
 from calculateEvaluationCCC import calculateCCC
+from src.utils.loss import VALoss
 
 # FIXME: these should not be hardcoded
 # Define parameters
@@ -166,7 +167,7 @@ def validate(val_loader, model, criterion, epoch):
     err_arou = 0.0
     err_vale = 0.0
 
-    txt_result = open("results_ourcc/val_lstm_%d.csv" % epoch, "w")
+    txt_result = open("results/val_lstm_facebval_cccloss_%d.csv" % epoch, "w")
     txt_result.write("video,utterance,arousal,valence\n")
     for (inputs, targets, (vid, utter)) in tqdm(val_loader, "Validation batch"):
         inputs: Tensor
@@ -198,8 +199,8 @@ def validate(val_loader, model, criterion, epoch):
     txt_result.close()
 
     arouCCC, valeCCC = calculateCCC(
-        "./results_ourcc/omg_ValidationVideos.csv",
-        "results_ourcc/val_lstm_%d.csv" % epoch,
+        "./results/omg_ValidationVideos.csv",
+        "results/val_lstm_facebval_cccloss_%d.csv" % epoch,
     )
     return (arouCCC, valeCCC)
 
@@ -289,7 +290,14 @@ if __name__ == "__main__":
     elif use_mps:
         model.to("mps")
 
-    criterion = torch.nn.MSELoss()
+    # criterion = torch.nn.MSELoss()
+    criterion = VALoss(loss_type='CCC', 
+                       digitize_num=1, 
+                       val_range=[-1,1], 
+                       aro_range=[0,1], 
+                       lambda_ccc=2,
+                       lambda_v=1,
+                       lambda_a=1)
 
     train_loader = DataLoader(
         OMGDataset(train_list_path, train_data_path),
@@ -327,7 +335,7 @@ if __name__ == "__main__":
                 save_model(
                     model,
                     (
-                        "./pth/model_lstm_facebval_%s_%.4f_%.4f.pth"
+                        "./pth/model_lstm_facebval_cccloss_%s_%.4f_%.4f.pth"
                         % (epoch, arou_ccc, vale_ccc)
                     ),
                     # "./pth_ourcc/model_lstm_{}_{}_{}.pth".format(

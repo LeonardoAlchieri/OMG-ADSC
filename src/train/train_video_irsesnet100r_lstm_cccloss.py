@@ -16,9 +16,10 @@ from torch import Tensor
 from tqdm import tqdm
 
 path.append("./")
-from models.our_backbones import facebval
+from src.models.iresnet import iresnet100
 from src.utils import load_backbone_weight
 from calculateEvaluationCCC import calculateCCC
+from src.utils.loss import VALoss
 
 # FIXME: these should not be hardcoded
 # Define parameters
@@ -41,16 +42,19 @@ flag_biLSTM = True
 classnum = 7
 correct_img_size = (112, 112, 3)
 
+model_name = 'irsetnet100r_lstm'
+loss_type = 'cccloss'
+
 
 class Net(torch.nn.Module):
-    def __init__(self, backbone):
+    def __init__(self, backbone, backbone_output_size: int = 521):
         super(Net, self).__init__()
         self.backbone = backbone
         self.linear = torch.nn.Linear(512, 2)
         self.tanh = torch.nn.Tanh()
         self.avgPool = torch.nn.AvgPool2d((num_seg, 1), stride=1)
         self.LSTM = torch.nn.LSTM(
-            2048, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
+            backbone_output_size, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
         )  # Input dim, hidden dim, num_layer
         for name, param in self.LSTM.named_parameters():
             if "bias" in name:
@@ -132,8 +136,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
 
-        # NOTE: added for way resnet wants shape 
-        inputs = inputs.reshape(inputs.shape[0], -1, 3, inputs.shape[-2], inputs.shape[-1])
+        inputs = inputs.view((-1, 3) + inputs.size()[-2:])
         outputs = model(inputs)
 
         loss = criterion(outputs, targets)
@@ -166,7 +169,7 @@ def validate(val_loader, model, criterion, epoch):
     err_arou = 0.0
     err_vale = 0.0
 
-    txt_result = open("results_ourcc/val_lstm_%d.csv" % epoch, "w")
+    txt_result = open("results/val_%s_%s_%d.csv" % (model_name, loss_type, epoch), "w")
     txt_result.write("video,utterance,arousal,valence\n")
     for (inputs, targets, (vid, utter)) in tqdm(val_loader, "Validation batch"):
         inputs: Tensor
@@ -179,8 +182,7 @@ def validate(val_loader, model, criterion, epoch):
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
 
-        # NOTE: added for way resnet wants shape 
-        inputs = inputs.reshape(inputs.shape[0], -1, 3, inputs.shape[-2], inputs.shape[-1])
+        inputs = inputs.view((-1, 3) + inputs.size()[-2:])
         outputs = model(inputs)
 
         outputs = outputs.data.cpu().numpy()
@@ -198,8 +200,8 @@ def validate(val_loader, model, criterion, epoch):
     txt_result.close()
 
     arouCCC, valeCCC = calculateCCC(
-        "./results_ourcc/omg_ValidationVideos.csv",
-        "results_ourcc/val_lstm_%d.csv" % epoch,
+        "./results/omg_ValidationVideos.csv",
+        "results/val_%s_%s_%d.csv" % (model_name, loss_type, epoch),
     )
     return (arouCCC, valeCCC)
 
@@ -266,30 +268,40 @@ if __name__ == "__main__":
 
     train_list_path = "./support_tables/train_list_lstm.txt"
     val_list_path = "./support_tables/validation_list_lstm.txt"
-    model_path = "./model/faceBVAL.pth.tar"
+    
     train_data_path: str = (
         "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Train_Set/trimmed_faces"
     )
     device: str = 'cuda' if use_cuda else ('mps' if use_mps else 'cpu')
     validation_data_path: str = "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Validation_Set/trimmed_faces"
-    backbone = facebval(loading_device=device)
+    
+    model_path = "./model/iresnet100r_MSM1.pth"
+    # iresnet100 net, trained on MSM1 face for 360000 iterations
+    backbone = iresnet100()
     backbone.load_state_dict(load_backbone_weight(weights_path=model_path, 
                                                   loading_device=device),
-                             strict=False) # while should not be used, I tested and only the final prediction layers are indeed missing
+                             strict=True) # while should not be used, I tested and only the final prediction layers are indeed missing
     # sphereface = getattr(net_sphere, "sphere20a")()
     # sphereface.load_state_dict(torch.load(model_path))
     # sphereface.feature = (
     #     True  # remove the last fc layer because we need to use LSTM first
     # )
 
-    model = Net(backbone)
+    model = Net(backbone, backbone_output_size=512)
 
     if use_cuda:
         model.cuda()
     elif use_mps:
         model.to("mps")
 
-    criterion = torch.nn.MSELoss()
+    # criterion = torch.nn.MSELoss()
+    criterion = VALoss(loss_type='CCC', 
+                       digitize_num=1, 
+                       val_range=[-1,1], 
+                       aro_range=[0,1], 
+                       lambda_ccc=2,
+                       lambda_v=1,
+                       lambda_a=1)
 
     train_loader = DataLoader(
         OMGDataset(train_list_path, train_data_path),
@@ -327,8 +339,8 @@ if __name__ == "__main__":
                 save_model(
                     model,
                     (
-                        "./pth/model_lstm_facebval_%s_%.4f_%.4f.pth"
-                        % (epoch, arou_ccc, vale_ccc)
+                        "./pth/model_%s_%s_%s_%.4f_%.4f.pth"
+                        % (model_name, loss_type, epoch, arou_ccc, vale_ccc)
                     ),
                     # "./pth_ourcc/model_lstm_{}_{}_{}.pth".format(
                     #     epoch, round(arou_ccc, 4), round(vale_ccc, 4)
