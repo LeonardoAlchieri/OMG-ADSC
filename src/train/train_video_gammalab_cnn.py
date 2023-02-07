@@ -12,19 +12,20 @@ from skimage import io
 from skimage.transform import resize
 from torch.nn.utils import clip_grad_norm
 from torch.utils.data import DataLoader, Dataset
+from torchvision.models import vgg16
 from torch import Tensor
 from tqdm import tqdm
 
 path.append("./")
-import net_sphere
 from calculateEvaluationCCC import calculateCCC
 from src.utils.loss import VALoss
+from src.models.gammalab_cnn import MultiCNN
 
 # FIXME: these should not be hardcoded
 # Define parameters
 use_cuda: bool = torch.cuda.is_available()
 # use_mps: bool = torch.backends.mps.is_available()
-use_mps = True
+use_mps = False
 
 lr = 0.01
 bs = 32
@@ -33,70 +34,40 @@ lr_steps = [8, 16, 24]
 
 gd = 20  # clip gradient
 eval_freq = 3
-print_freq = 18
-num_worker = 8
-num_seg = 16
+print_freq = 20
+num_worker = 4
+num_seg = 64
 flag_biLSTM = True
 
 classnum = 7
 correct_img_size = (112, 96, 3)
 
-model_name = 'TEST'
+model_name = 'gammalab_cnn_cccloss_correcttanh'
 loss_type = 'cccloss'
 
 
 class Net(torch.nn.Module):
-    def __init__(self, backbone, backbone_output_size: int = 521):
+    def __init__(self, backbone, backbone_output_size: int = 512, num_seg: int = 64):
         super(Net, self).__init__()
         self.backbone = backbone
-        self.linear = torch.nn.Linear(512, 2)
+        self.globalavgpool = torch.nn.AvgPool2d(kernel_size=(3,3))
+        self.gammalab_cnn = MultiCNN(num_frames=num_seg, input_size=backbone_output_size)
+        self.linear = torch.nn.Linear(256, 2)
         self.tanh = torch.nn.Tanh()
         self.sigmoid = torch.nn.Sigmoid()
-        self.avgPool = torch.nn.AvgPool2d((num_seg, 1), stride=1)
-        # self.LSTM = torch.nn.LSTM(
-        #     backbone_output_size, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
-        # )  # Input dim, hidden dim, num_layer
-        self.LSTM = torch.nn.GRU(
-            backbone_output_size, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
-        )  # Input dim, hidden dim, num_layer
-        for name, param in self.LSTM.named_parameters():
-            if "bias" in name:
-                torch.nn.init.constant(param, 0.0)
-            elif "weight" in name:
-                torch.nn.init.orthogonal(param)
 
-    def sequentialLSTM(self, input, hidden=None):
-
-        input_lstm = input.view([-1, num_seg, input.shape[1]])
-        batch_size = input_lstm.shape[0]
-        feature_size = input_lstm.shape[2]
-
-        self.LSTM.flatten_parameters()
-
-        output_lstm, hidden = self.LSTM(input_lstm)
-        if flag_biLSTM:
-            output_lstm = (
-                output_lstm.contiguous()
-                .view(batch_size, output_lstm.size(1), 2, -1)
-                .sum(2)
-                .view(batch_size, output_lstm.size(1), -1)
-            )
-
-        # avarage the output of LSTM
-        output_lstm = output_lstm.view(batch_size, 1, num_seg, -1)
-        out = self.avgPool(output_lstm)
-        out = out.view(batch_size, -1)
-        return out
 
     def forward(self, x):
         x = self.backbone(x)
-        x = self.sequentialLSTM(x)
+        # NOTE: this gloval average pooling was used by GammaLab to have 512 features
+        x = self.globalavgpool(x).squeeze()
+        x = self.gammalab_cnn(x)
         x = self.linear(x)
         
         arousal = x[:, 0]
         valence = x[:, 1]
-        # valence = self.tanh(valence)
-        # arousal = self.sigmoid(arousal)
+        valence = self.tanh(valence)
+        arousal = self.sigmoid(arousal)
 
         return torch.stack([arousal, valence], dim=1)
 
@@ -138,7 +109,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda(non_blocking=True)
         elif use_mps:
-            inputs, targets = inputs.to("mps", non_blocking=False), targets.to("mps", non_blocking=False)
+            inputs, targets = inputs.to("mps"), targets.to("mps", non_blocking=True)
 
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
@@ -164,9 +135,8 @@ def train(train_loader, model, criterion, optimizer, epoch):
         train_loss += loss.data.item()
 
         if i % print_freq == 0:
-            print("output: ", outputs)
             printoneline(
-                dt(), "Epoch=%d Loss=%.4f \n" % (epoch, train_loss / (batch_idx + 1))
+                dt(), "Epoch=%d Loss=%.4f\n" % (epoch, train_loss / (batch_idx + 1))
             )
         batch_idx += 1
 
@@ -185,7 +155,7 @@ def validate(val_loader, model, criterion, epoch):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda()
         elif use_mps:
-            inputs, targets = inputs.to("mps", non_blocking=False), targets.to("mps", non_blocking=False)
+            inputs, targets = inputs.to("mps"), targets.to("mps")
 
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
@@ -283,21 +253,15 @@ if __name__ == "__main__":
     )
     device: str = 'cuda' if use_cuda else ('mps' if use_mps else 'cpu')
     validation_data_path: str = "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Validation_Set/trimmed_faces"
-    
-    model_path = "./model/sphere20a_20171020.pth"
-    backbone = getattr(net_sphere, "sphere20a")()
-    if augmentation:
-        backbone.load_state_dict(torch.load(model_path))
-    backbone.feature = (
-        True  # remove the last fc layer because we need to use LSTM first
-    )
+
+    backbone = vgg16(pretrained=True).features
 
     model = Net(backbone, backbone_output_size=512)
 
     if use_cuda:
         model.cuda()
     elif use_mps:
-        model.to("mps", non_blocking=False)
+        model.to("mps")
 
     # criterion = torch.nn.MSELoss()
     criterion = VALoss(loss_type='CCC', 
@@ -312,13 +276,13 @@ if __name__ == "__main__":
         OMGDataset(train_list_path, train_data_path),
         batch_size=bs,
         shuffle=True,
-        num_workers=num_worker,
+        num_workers=1,
     )
     val_loader = DataLoader(
         OMGDataset(val_list_path, validation_data_path),
         batch_size=bs,
         shuffle=False,
-        num_workers=num_worker,
+        num_workers=1,
     )
 
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
