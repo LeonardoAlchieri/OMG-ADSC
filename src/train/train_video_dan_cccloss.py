@@ -19,6 +19,7 @@ path.append("./")
 from calculateEvaluationCCC_ours import calculateCCC
 from src.models.dan import DAN
 from src.utils import load_backbone_weight
+from src.utils.loss import VALoss
 
 # FIXME: these should not be hardcoded
 # Define parameters
@@ -272,7 +273,7 @@ if __name__ == "__main__":
     )
     validation_data_path: str = "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Validation_Set/trimmed_faces"
 
-    model_name: str = "dan_corecttanh_mseloss_lstm_TEST"
+    model_name: str = "dan_corecttanh_ccclossactual_lstm"
 
     device: str = "cuda" if use_cuda else ("mps" if use_mps else "cpu")
     backbone = DAN(num_class=8)
@@ -288,7 +289,13 @@ if __name__ == "__main__":
     elif use_mps:
         model.to("mps")
 
-    criterion = torch.nn.MSELoss()
+    criterion = VALoss(loss_type='CCC', 
+                       digitize_num=1, 
+                       val_range=[-1,1], 
+                       aro_range=[0,1], 
+                       lambda_ccc=2,
+                       lambda_v=1,
+                       lambda_a=1)
 
     train_loader = DataLoader(
         OMGDataset(train_list_path, train_data_path),
