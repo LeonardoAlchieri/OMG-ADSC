@@ -24,7 +24,7 @@ from src.utils.loss import VALoss
 # Define parameters
 use_cuda: bool = torch.cuda.is_available()
 # use_mps: bool = torch.backends.mps.is_available()
-use_mps = True
+use_mps = False
 
 lr = 0.01
 bs = 32
@@ -33,15 +33,16 @@ lr_steps = [8, 16, 24]
 
 gd = 20  # clip gradient
 eval_freq = 3
-print_freq = 18
-num_worker = 8
-num_seg = 16
+print_freq = 20
+num_worker = 4
+num_seg = 8
 flag_biLSTM = True
 
 classnum = 7
 correct_img_size = (112, 96, 3)
 
-model_name = 'TEST'
+# NOTE: difference
+model_name = 'lstm_correcttanh_shorterperiod'
 loss_type = 'cccloss'
 
 
@@ -53,10 +54,7 @@ class Net(torch.nn.Module):
         self.tanh = torch.nn.Tanh()
         self.sigmoid = torch.nn.Sigmoid()
         self.avgPool = torch.nn.AvgPool2d((num_seg, 1), stride=1)
-        # self.LSTM = torch.nn.LSTM(
-        #     backbone_output_size, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
-        # )  # Input dim, hidden dim, num_layer
-        self.LSTM = torch.nn.GRU(
+        self.LSTM = torch.nn.LSTM(
             backbone_output_size, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
         )  # Input dim, hidden dim, num_layer
         for name, param in self.LSTM.named_parameters():
@@ -95,8 +93,8 @@ class Net(torch.nn.Module):
         
         arousal = x[:, 0]
         valence = x[:, 1]
-        # valence = self.tanh(valence)
-        # arousal = self.sigmoid(arousal)
+        valence = self.tanh(valence)
+        arousal = self.sigmoid(arousal)
 
         return torch.stack([arousal, valence], dim=1)
 
@@ -138,7 +136,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda(non_blocking=True)
         elif use_mps:
-            inputs, targets = inputs.to("mps", non_blocking=False), targets.to("mps", non_blocking=False)
+            inputs, targets = inputs.to("mps"), targets.to("mps", non_blocking=True)
 
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
@@ -164,9 +162,8 @@ def train(train_loader, model, criterion, optimizer, epoch):
         train_loss += loss.data.item()
 
         if i % print_freq == 0:
-            print("output: ", outputs)
             printoneline(
-                dt(), "Epoch=%d Loss=%.4f \n" % (epoch, train_loss / (batch_idx + 1))
+                dt(), "Epoch=%d Loss=%.4f\n" % (epoch, train_loss / (batch_idx + 1))
             )
         batch_idx += 1
 
@@ -185,7 +182,7 @@ def validate(val_loader, model, criterion, epoch):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda()
         elif use_mps:
-            inputs, targets = inputs.to("mps", non_blocking=False), targets.to("mps", non_blocking=False)
+            inputs, targets = inputs.to("mps"), targets.to("mps")
 
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
@@ -276,7 +273,6 @@ if __name__ == "__main__":
 
     train_list_path = "./support_tables/train_list_lstm.txt"
     val_list_path = "./support_tables/validation_list_lstm.txt"
-    augmentation: bool = False
     
     train_data_path: str = (
         "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Train_Set/trimmed_faces"
@@ -286,8 +282,7 @@ if __name__ == "__main__":
     
     model_path = "./model/sphere20a_20171020.pth"
     backbone = getattr(net_sphere, "sphere20a")()
-    if augmentation:
-        backbone.load_state_dict(torch.load(model_path))
+    backbone.load_state_dict(torch.load(model_path))
     backbone.feature = (
         True  # remove the last fc layer because we need to use LSTM first
     )
@@ -297,7 +292,7 @@ if __name__ == "__main__":
     if use_cuda:
         model.cuda()
     elif use_mps:
-        model.to("mps", non_blocking=False)
+        model.to("mps")
 
     # criterion = torch.nn.MSELoss()
     criterion = VALoss(loss_type='CCC', 
@@ -312,13 +307,13 @@ if __name__ == "__main__":
         OMGDataset(train_list_path, train_data_path),
         batch_size=bs,
         shuffle=True,
-        num_workers=num_worker,
+        num_workers=1,
     )
     val_loader = DataLoader(
         OMGDataset(val_list_path, validation_data_path),
         batch_size=bs,
         shuffle=False,
-        num_workers=num_worker,
+        num_workers=1,
     )
 
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)

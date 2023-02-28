@@ -16,7 +16,8 @@ from torch import Tensor
 from tqdm import tqdm
 
 path.append("./")
-import net_sphere
+from src.models.sfnet import sfnet20
+from src.utils import load_backbone_weight
 from calculateEvaluationCCC import calculateCCC
 from src.utils.loss import VALoss
 
@@ -27,7 +28,7 @@ use_cuda: bool = torch.cuda.is_available()
 use_mps = True
 
 lr = 0.01
-bs = 32
+bs = 64
 n_epoch = 30
 lr_steps = [8, 16, 24]
 
@@ -39,9 +40,9 @@ num_seg = 16
 flag_biLSTM = True
 
 classnum = 7
-correct_img_size = (112, 96, 3)
+correct_img_size = (112, 112, 3)
 
-model_name = 'TEST'
+model_name = 'lstm_gru_sfnet202_VGGFace'
 loss_type = 'cccloss'
 
 
@@ -53,17 +54,14 @@ class Net(torch.nn.Module):
         self.tanh = torch.nn.Tanh()
         self.sigmoid = torch.nn.Sigmoid()
         self.avgPool = torch.nn.AvgPool2d((num_seg, 1), stride=1)
-        # self.LSTM = torch.nn.LSTM(
-        #     backbone_output_size, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
-        # )  # Input dim, hidden dim, num_layer
         self.LSTM = torch.nn.GRU(
             backbone_output_size, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
         )  # Input dim, hidden dim, num_layer
-        for name, param in self.LSTM.named_parameters():
-            if "bias" in name:
-                torch.nn.init.constant(param, 0.0)
-            elif "weight" in name:
-                torch.nn.init.orthogonal(param)
+        # for name, param in self.LSTM.named_parameters():
+        #     if "bias" in name:
+        #         torch.nn.init.constant(param, 0.0)
+        #     elif "weight" in name:
+        #         torch.nn.init.orthogonal(param)
 
     def sequentialLSTM(self, input, hidden=None):
 
@@ -138,7 +136,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda(non_blocking=True)
         elif use_mps:
-            inputs, targets = inputs.to("mps", non_blocking=False), targets.to("mps", non_blocking=False)
+            inputs, targets = inputs.to("mps",non_blocking=False), targets.to("mps", non_blocking=False)
 
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
@@ -164,9 +162,9 @@ def train(train_loader, model, criterion, optimizer, epoch):
         train_loss += loss.data.item()
 
         if i % print_freq == 0:
-            print("output: ", outputs)
+            print('outputs', outputs)
             printoneline(
-                dt(), "Epoch=%d Loss=%.4f \n" % (epoch, train_loss / (batch_idx + 1))
+                dt(), "Epoch=%d Loss=%.4f\n" % (epoch, train_loss / (batch_idx + 1))
             )
         batch_idx += 1
 
@@ -284,13 +282,18 @@ if __name__ == "__main__":
     device: str = 'cuda' if use_cuda else ('mps' if use_mps else 'cpu')
     validation_data_path: str = "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Validation_Set/trimmed_faces"
     
-    model_path = "./model/sphere20a_20171020.pth"
-    backbone = getattr(net_sphere, "sphere20a")()
-    if augmentation:
-        backbone.load_state_dict(torch.load(model_path))
-    backbone.feature = (
-        True  # remove the last fc layer because we need to use LSTM first
-    )
+    model_path = "./model/sfnet202_vggface.pth"
+    # backbone = getattr(net_sphere, "sphere20a")()
+    backbone = sfnet20()
+    backbone.load_state_dict(load_backbone_weight(weights_path=model_path, 
+                                                  loading_device=device),
+                             strict=True) # while should not be used, I tested and only the final prediction layers are indeed missing
+    print(f"{backbone=}")
+    # if augmentation:
+    #     backbone.load_state_dict(torch.load(model_path))
+    # backbone.feature = (
+    #     True  # remove the last fc layer because we need to use LSTM first
+    # )
 
     model = Net(backbone, backbone_output_size=512)
 
