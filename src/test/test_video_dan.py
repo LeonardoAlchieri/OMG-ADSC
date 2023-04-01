@@ -10,20 +10,21 @@ import torch.optim as optim
 from numpy.random import randint
 from skimage import io
 from skimage.transform import resize
+from torch import Tensor
 from torch.nn.utils import clip_grad_norm
 from torch.utils.data import DataLoader, Dataset
-from torch import Tensor
 from tqdm import tqdm
-from torchvision.models import convnext_small
 
 path.append("./")
 from calculateEvaluationCCC_ours import calculateCCC
+from src.models.dan import DAN
+from src.utils import load_backbone_weight
 
 # FIXME: these should not be hardcoded
 # Define parameters
 use_cuda: bool = torch.cuda.is_available()
-# use_mps: bool = torch.backends.mps.is_available()
-use_mps = False
+use_mps: bool = torch.backends.mps.is_available()
+# use_mps = False
 
 lr = 0.01
 bs = 32
@@ -49,7 +50,7 @@ class Net(torch.nn.Module):
         self.tanh = torch.nn.Tanh()
         self.avgPool = torch.nn.AvgPool2d((num_seg, 1), stride=1)
         self.LSTM = torch.nn.LSTM(
-            1000, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
+            512, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
         )  # Input dim, hidden dim, num_layer
         for name, param in self.LSTM.named_parameters():
             if "bias" in name:
@@ -131,7 +132,8 @@ def train(train_loader, model, criterion, optimizer, epoch):
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
 
-        inputs = inputs.view((-1, 3) + inputs.size()[-2:])
+        # inputs = inputs.view((-1, 3) + inputs.size()[-2:])
+        inputs = inputs.reshape(inputs.shape[0], -1, 3, inputs.shape[-2], inputs.shape[-1])
         outputs = model(inputs)
 
         loss = criterion(outputs, targets)
@@ -164,7 +166,7 @@ def validate(val_loader, model, criterion, epoch):
     err_arou = 0.0
     err_vale = 0.0
 
-    txt_result = open("results/val_convnext_%d.csv" % epoch, "w")
+    txt_result = open("results/val_%s_%d.csv" % (model_name, epoch), "w")
     txt_result.write("video,utterance,arousal,valence\n")
     for (inputs, targets, (vid, utter)) in tqdm(val_loader, "Validation batch"):
         inputs: Tensor
@@ -177,7 +179,8 @@ def validate(val_loader, model, criterion, epoch):
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
 
-        inputs = inputs.view((-1, 3) + inputs.size()[-2:])
+        # inputs = inputs.view((-1, 3) + inputs.size()[-2:])
+        inputs = inputs.reshape(inputs.shape[0], -1, 3, inputs.shape[-2], inputs.shape[-1])
         outputs = model(inputs)
 
         outputs = outputs.data.cpu().numpy()
@@ -196,7 +199,7 @@ def validate(val_loader, model, criterion, epoch):
 
     arouCCC, valeCCC = calculateCCC(
         "./results/omg_ValidationVideos.csv",
-        "results/val_%s_%d.csv" %(model_name, epoch),
+        "results/val_%s_%d.csv" % (model_name, epoch),
     )
     return (arouCCC, valeCCC)
 
@@ -263,13 +266,20 @@ if __name__ == "__main__":
 
     train_list_path = "./support_tables/train_list_lstm.txt"
     val_list_path = "./support_tables/validation_list_lstm.txt"
-    # model_path = "./model/sphere20a_20171020.pth"
+    model_path = "./model/dan_affecnet8_epoch5_acc0.6209.pth"
     train_data_path: str = (
         "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Train_Set/faces2"
     )
     validation_data_path: str = "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Validation_Set/trimmed_faces"
 
-    backbone = convnext_small(weights=True)
+    model_name: str = "dan_corecttanh_mseloss_lstm_TEST"
+
+    device: str = "cuda" if use_cuda else ("mps" if use_mps else "cpu")
+    backbone = DAN(num_class=8)
+    backbone.load_state_dict(
+        load_backbone_weight(weights_path=model_path, loading_device=device),
+        strict=True,
+    )
 
     model = Net(backbone)
 
@@ -316,8 +326,8 @@ if __name__ == "__main__":
                 save_model(
                     model,
                     (
-                        "./pth/model_convnext_%s_%.4f_%.4f.pth"
-                        % (epoch, arou_ccc, vale_ccc)
+                        "./pth/model_%s_%s_%.4f_%.4f.pth"
+                        % (model_name, epoch, arou_ccc, vale_ccc)
                     ),
                     # "./pth/model_lstm_{}_{}_{}.pth".format(
                     #     epoch, round(arou_ccc, 4), round(vale_ccc, 4)

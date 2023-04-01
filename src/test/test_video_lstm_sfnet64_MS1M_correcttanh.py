@@ -14,10 +14,12 @@ from torch.nn.utils import clip_grad_norm
 from torch.utils.data import DataLoader, Dataset
 from torch import Tensor
 from tqdm import tqdm
-from torchvision.models import convnext_small
 
 path.append("./")
-from calculateEvaluationCCC_ours import calculateCCC
+from src.models.sfnet import sfnet64
+from src.utils import load_backbone_weight
+from calculateEvaluationCCC import calculateCCC
+from src.utils.loss import VALoss
 
 # FIXME: these should not be hardcoded
 # Define parameters
@@ -26,7 +28,7 @@ use_cuda: bool = torch.cuda.is_available()
 use_mps = False
 
 lr = 0.01
-bs = 32
+bs = 16
 n_epoch = 30
 lr_steps = [8, 16, 24]
 
@@ -38,18 +40,22 @@ num_seg = 16
 flag_biLSTM = True
 
 classnum = 7
-correct_img_size = (112, 96, 3)
+correct_img_size = (112, 112, 3)
+
+model_name = 'lstm_sfnet64_MS1M_correcttanh'
+loss_type = 'cccloss'
 
 
 class Net(torch.nn.Module):
-    def __init__(self, backbone):
+    def __init__(self, backbone, backbone_output_size: int = 521):
         super(Net, self).__init__()
         self.backbone = backbone
         self.linear = torch.nn.Linear(512, 2)
         self.tanh = torch.nn.Tanh()
+        self.sigmoid = torch.nn.Sigmoid()
         self.avgPool = torch.nn.AvgPool2d((num_seg, 1), stride=1)
         self.LSTM = torch.nn.LSTM(
-            1000, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
+            backbone_output_size, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
         )  # Input dim, hidden dim, num_layer
         for name, param in self.LSTM.named_parameters():
             if "bias" in name:
@@ -84,9 +90,13 @@ class Net(torch.nn.Module):
         x = self.backbone(x)
         x = self.sequentialLSTM(x)
         x = self.linear(x)
-        x = self.tanh(x)
+        
+        arousal = x[:, 0]
+        valence = x[:, 1]
+        valence = self.tanh(valence)
+        arousal = self.sigmoid(arousal)
 
-        return x
+        return torch.stack([arousal, valence], dim=1)
 
 
 def printoneline(*argv):
@@ -164,7 +174,7 @@ def validate(val_loader, model, criterion, epoch):
     err_arou = 0.0
     err_vale = 0.0
 
-    txt_result = open("results/val_convnext_%d.csv" % epoch, "w")
+    txt_result = open("results/val_%s_%s_%d.csv" % (model_name, loss_type, epoch), "w")
     txt_result.write("video,utterance,arousal,valence\n")
     for (inputs, targets, (vid, utter)) in tqdm(val_loader, "Validation batch"):
         inputs: Tensor
@@ -196,7 +206,7 @@ def validate(val_loader, model, criterion, epoch):
 
     arouCCC, valeCCC = calculateCCC(
         "./results/omg_ValidationVideos.csv",
-        "results/val_%s_%d.csv" %(model_name, epoch),
+        "results/val_%s_%s_%d.csv" % (model_name, loss_type, epoch),
     )
     return (arouCCC, valeCCC)
 
@@ -263,35 +273,57 @@ if __name__ == "__main__":
 
     train_list_path = "./support_tables/train_list_lstm.txt"
     val_list_path = "./support_tables/validation_list_lstm.txt"
-    # model_path = "./model/sphere20a_20171020.pth"
+    augmentation: bool = False
+    
     train_data_path: str = (
-        "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Train_Set/faces2"
+        "/data/leonardo/OMGEmotionChallenge/Train_Set/trimmed_faces"
     )
-    validation_data_path: str = "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Validation_Set/trimmed_faces"
+    device: str = 'cuda:0' if use_cuda else ('mps' if use_mps else 'cpu')
+    validation_data_path: str = "/data/leonardo/OMGEmotionChallenge/Validation_Set/trimmed_faces"
+    
+    model_path = "./model/sphere64+_MS1M.pth"
+    # backbone = getattr(net_sphere, "sphere20a")()
+    backbone = sfnet64()
+    backbone.load_state_dict(load_backbone_weight(weights_path=model_path, 
+                                                  loading_device=device),
+                             strict=True) # while should not be used, I tested and only the final prediction layers are indeed missing
+    print(f"{backbone=}")
+    # if augmentation:
+    #     backbone.load_state_dict(torch.load(model_path))
+    # backbone.feature = (
+    #     True  # remove the last fc layer because we need to use LSTM first
+    # )
 
-    backbone = convnext_small(weights=True)
-
-    model = Net(backbone)
+    model = Net(backbone, backbone_output_size=512)
 
     if use_cuda:
         model.cuda()
     elif use_mps:
         model.to("mps")
 
-    criterion = torch.nn.MSELoss()
+    # criterion = torch.nn.MSELoss()
+    criterion = VALoss(loss_type='CCC', 
+                       digitize_num=1, 
+                       val_range=[-1,1], 
+                       aro_range=[0,1], 
+                       lambda_ccc=2,
+                       lambda_v=1,
+                       lambda_a=1)
 
     train_loader = DataLoader(
         OMGDataset(train_list_path, train_data_path),
         batch_size=bs,
         shuffle=True,
-        num_workers=4,
+        num_workers=num_worker,
     )
     val_loader = DataLoader(
         OMGDataset(val_list_path, validation_data_path),
         batch_size=bs,
         shuffle=False,
-        num_workers=4,
+        num_workers=num_worker,
     )
+    print(f"{len(train_loader)=}")
+    print(f"{len(val_loader)=}")
 
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
 
@@ -316,10 +348,10 @@ if __name__ == "__main__":
                 save_model(
                     model,
                     (
-                        "./pth/model_convnext_%s_%.4f_%.4f.pth"
-                        % (epoch, arou_ccc, vale_ccc)
+                        "./pth/model_%s_%s_%s_%.4f_%.4f.pth"
+                        % (model_name, loss_type, epoch, arou_ccc, vale_ccc)
                     ),
-                    # "./pth/model_lstm_{}_{}_{}.pth".format(
+                    # "./pth_ourcc/model_lstm_{}_{}_{}.pth".format(
                     #     epoch, round(arou_ccc, 4), round(vale_ccc, 4)
                     # ),
                 )

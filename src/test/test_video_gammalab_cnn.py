@@ -12,12 +12,14 @@ from skimage import io
 from skimage.transform import resize
 from torch.nn.utils import clip_grad_norm
 from torch.utils.data import DataLoader, Dataset
+from torchvision.models import vgg16
 from torch import Tensor
 from tqdm import tqdm
-from torchvision.models import convnext_small
 
 path.append("./")
-from calculateEvaluationCCC_ours import calculateCCC
+from calculateEvaluationCCC import calculateCCC
+from src.utils.loss import VALoss
+from src.models.gammalab_cnn import MultiCNN
 
 # FIXME: these should not be hardcoded
 # Define parameters
@@ -34,59 +36,40 @@ gd = 20  # clip gradient
 eval_freq = 3
 print_freq = 20
 num_worker = 4
-num_seg = 16
+num_seg = 64
 flag_biLSTM = True
 
 classnum = 7
 correct_img_size = (112, 96, 3)
 
+model_name = 'gammalab_cnn_cccloss_correcttanh'
+loss_type = 'cccloss'
+
 
 class Net(torch.nn.Module):
-    def __init__(self, backbone):
+    def __init__(self, backbone, backbone_output_size: int = 512, num_seg: int = 64):
         super(Net, self).__init__()
         self.backbone = backbone
-        self.linear = torch.nn.Linear(512, 2)
+        self.globalavgpool = torch.nn.AvgPool2d(kernel_size=(3,3))
+        self.gammalab_cnn = MultiCNN(num_frames=num_seg, input_size=backbone_output_size)
+        self.linear = torch.nn.Linear(256, 2)
         self.tanh = torch.nn.Tanh()
-        self.avgPool = torch.nn.AvgPool2d((num_seg, 1), stride=1)
-        self.LSTM = torch.nn.LSTM(
-            1000, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
-        )  # Input dim, hidden dim, num_layer
-        for name, param in self.LSTM.named_parameters():
-            if "bias" in name:
-                torch.nn.init.constant(param, 0.0)
-            elif "weight" in name:
-                torch.nn.init.orthogonal(param)
+        self.sigmoid = torch.nn.Sigmoid()
 
-    def sequentialLSTM(self, input, hidden=None):
-
-        input_lstm = input.view([-1, num_seg, input.shape[1]])
-        batch_size = input_lstm.shape[0]
-        feature_size = input_lstm.shape[2]
-
-        self.LSTM.flatten_parameters()
-
-        output_lstm, hidden = self.LSTM(input_lstm)
-        if flag_biLSTM:
-            output_lstm = (
-                output_lstm.contiguous()
-                .view(batch_size, output_lstm.size(1), 2, -1)
-                .sum(2)
-                .view(batch_size, output_lstm.size(1), -1)
-            )
-
-        # avarage the output of LSTM
-        output_lstm = output_lstm.view(batch_size, 1, num_seg, -1)
-        out = self.avgPool(output_lstm)
-        out = out.view(batch_size, -1)
-        return out
 
     def forward(self, x):
         x = self.backbone(x)
-        x = self.sequentialLSTM(x)
+        # NOTE: this gloval average pooling was used by GammaLab to have 512 features
+        x = self.globalavgpool(x).squeeze()
+        x = self.gammalab_cnn(x)
         x = self.linear(x)
-        x = self.tanh(x)
+        
+        arousal = x[:, 0]
+        valence = x[:, 1]
+        valence = self.tanh(valence)
+        arousal = self.sigmoid(arousal)
 
-        return x
+        return torch.stack([arousal, valence], dim=1)
 
 
 def printoneline(*argv):
@@ -164,7 +147,7 @@ def validate(val_loader, model, criterion, epoch):
     err_arou = 0.0
     err_vale = 0.0
 
-    txt_result = open("results/val_convnext_%d.csv" % epoch, "w")
+    txt_result = open("results/val_%s_%s_%d.csv" % (model_name, loss_type, epoch), "w")
     txt_result.write("video,utterance,arousal,valence\n")
     for (inputs, targets, (vid, utter)) in tqdm(val_loader, "Validation batch"):
         inputs: Tensor
@@ -196,7 +179,7 @@ def validate(val_loader, model, criterion, epoch):
 
     arouCCC, valeCCC = calculateCCC(
         "./results/omg_ValidationVideos.csv",
-        "results/val_%s_%d.csv" %(model_name, epoch),
+        "results/val_%s_%s_%d.csv" % (model_name, loss_type, epoch),
     )
     return (arouCCC, valeCCC)
 
@@ -263,34 +246,43 @@ if __name__ == "__main__":
 
     train_list_path = "./support_tables/train_list_lstm.txt"
     val_list_path = "./support_tables/validation_list_lstm.txt"
-    # model_path = "./model/sphere20a_20171020.pth"
+    augmentation: bool = False
+    
     train_data_path: str = (
-        "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Train_Set/faces2"
+        "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Train_Set/trimmed_faces"
     )
+    device: str = 'cuda' if use_cuda else ('mps' if use_mps else 'cpu')
     validation_data_path: str = "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Validation_Set/trimmed_faces"
 
-    backbone = convnext_small(weights=True)
+    backbone = vgg16(pretrained=True).features
 
-    model = Net(backbone)
+    model = Net(backbone, backbone_output_size=512)
 
     if use_cuda:
         model.cuda()
     elif use_mps:
         model.to("mps")
 
-    criterion = torch.nn.MSELoss()
+    # criterion = torch.nn.MSELoss()
+    criterion = VALoss(loss_type='CCC', 
+                       digitize_num=1, 
+                       val_range=[-1,1], 
+                       aro_range=[0,1], 
+                       lambda_ccc=2,
+                       lambda_v=1,
+                       lambda_a=1)
 
     train_loader = DataLoader(
         OMGDataset(train_list_path, train_data_path),
         batch_size=bs,
         shuffle=True,
-        num_workers=4,
+        num_workers=1,
     )
     val_loader = DataLoader(
         OMGDataset(val_list_path, validation_data_path),
         batch_size=bs,
         shuffle=False,
-        num_workers=4,
+        num_workers=1,
     )
 
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
@@ -316,10 +308,10 @@ if __name__ == "__main__":
                 save_model(
                     model,
                     (
-                        "./pth/model_convnext_%s_%.4f_%.4f.pth"
-                        % (epoch, arou_ccc, vale_ccc)
+                        "./pth/model_%s_%s_%s_%.4f_%.4f.pth"
+                        % (model_name, loss_type, epoch, arou_ccc, vale_ccc)
                     ),
-                    # "./pth/model_lstm_{}_{}_{}.pth".format(
+                    # "./pth_ourcc/model_lstm_{}_{}_{}.pth".format(
                     #     epoch, round(arou_ccc, 4), round(vale_ccc, 4)
                     # ),
                 )

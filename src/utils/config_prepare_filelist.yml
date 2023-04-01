@@ -1,3 +1,3 @@
-ground_truth_path: "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/omg_ValidationVideos.csv"
-data_path: "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Validation_Set/trimmed_faces"
-output_name: validation_list_lstm.txt
+ground_truth_path: "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/omg_TestVideos_WithLabels.csv"
+data_path: "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Test_Set/trimmed_faces"
+output_name: test_list_lstm.txt

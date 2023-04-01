@@ -11,7 +11,7 @@ _filename: str = basename(__file__).split(".")[0]
 
 
 @get_execution_time_print
-def load_config(path: str = "repeat_src/run/config_dan_fcn.yml") -> Dict[str, Any]:
+def load_config(path: str) -> Dict[str, Any]:
     with open(path, "r") as file:
         config_params = load_yaml(file)
     return config_params
@@ -26,7 +26,7 @@ def create_img_list(row: Series, data_path: str) -> str:
 
 
 def main():
-    path_to_config: str = f"utils/config_{_filename}.yml"
+    path_to_config: str = f"src/utils/config_{_filename}.yml"
 
     print("Starting model training")
     configs = load_config(path=path_to_config)

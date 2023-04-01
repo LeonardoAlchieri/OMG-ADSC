@@ -14,10 +14,12 @@ from torch.nn.utils import clip_grad_norm
 from torch.utils.data import DataLoader, Dataset
 from torch import Tensor
 from tqdm import tqdm
-from torchvision.models import convnext_small
 
 path.append("./")
-from calculateEvaluationCCC_ours import calculateCCC
+from efficientnet_pytorch import EfficientNet
+from src.utils import load_backbone_weight
+from calculateEvaluationCCC import calculateCCC
+from src.utils.loss import VALoss
 
 # FIXME: these should not be hardcoded
 # Define parameters
@@ -38,18 +40,21 @@ num_seg = 16
 flag_biLSTM = True
 
 classnum = 7
-correct_img_size = (112, 96, 3)
+correct_img_size = (112, 112, 3)
+
+model_name = 'efficientnet_lstm'
+loss_type = 'cccloss'
 
 
 class Net(torch.nn.Module):
-    def __init__(self, backbone):
+    def __init__(self, backbone, backbone_output_size: int = 521):
         super(Net, self).__init__()
         self.backbone = backbone
         self.linear = torch.nn.Linear(512, 2)
         self.tanh = torch.nn.Tanh()
         self.avgPool = torch.nn.AvgPool2d((num_seg, 1), stride=1)
         self.LSTM = torch.nn.LSTM(
-            1000, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
+            backbone_output_size, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
         )  # Input dim, hidden dim, num_layer
         for name, param in self.LSTM.named_parameters():
             if "bias" in name:
@@ -164,7 +169,7 @@ def validate(val_loader, model, criterion, epoch):
     err_arou = 0.0
     err_vale = 0.0
 
-    txt_result = open("results/val_convnext_%d.csv" % epoch, "w")
+    txt_result = open("results/val_%s_%s_%d.csv" % (model_name, loss_type, epoch), "w")
     txt_result.write("video,utterance,arousal,valence\n")
     for (inputs, targets, (vid, utter)) in tqdm(val_loader, "Validation batch"):
         inputs: Tensor
@@ -196,7 +201,7 @@ def validate(val_loader, model, criterion, epoch):
 
     arouCCC, valeCCC = calculateCCC(
         "./results/omg_ValidationVideos.csv",
-        "results/val_%s_%d.csv" %(model_name, epoch),
+        "results/val_%s_%s_%d.csv" % (model_name, loss_type, epoch),
     )
     return (arouCCC, valeCCC)
 
@@ -263,34 +268,52 @@ if __name__ == "__main__":
 
     train_list_path = "./support_tables/train_list_lstm.txt"
     val_list_path = "./support_tables/validation_list_lstm.txt"
-    # model_path = "./model/sphere20a_20171020.pth"
+    
     train_data_path: str = (
-        "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Train_Set/faces2"
+        "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Train_Set/trimmed_faces"
     )
+    device: str = 'cuda' if use_cuda else ('mps' if use_mps else 'cpu')
     validation_data_path: str = "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Validation_Set/trimmed_faces"
+    
+    model_path = "./model/iresnet100r_MSM1.pth"
+    # iresnet100 net, trained on MSM1 face for 360000 iterations
+    backbone = EfficientNet.from_pretrained('efficientnet-b0')
+    # backbone.load_state_dict(load_backbone_weight(weights_path=model_path, 
+    #                                               loading_device=device),
+    #                          strict=True) # while should not be used, I tested and only the final prediction layers are indeed missing
+    # sphereface = getattr(net_sphere, "sphere20a")()
+    # sphereface.load_state_dict(torch.load(model_path))
+    # sphereface.feature = (
+    #     True  # remove the last fc layer because we need to use LSTM first
+    # )
 
-    backbone = convnext_small(weights=True)
-
-    model = Net(backbone)
+    model = Net(backbone, backbone_output_size=1000)
 
     if use_cuda:
         model.cuda()
     elif use_mps:
         model.to("mps")
 
-    criterion = torch.nn.MSELoss()
+    # criterion = torch.nn.MSELoss()
+    criterion = VALoss(loss_type='CCC', 
+                       digitize_num=1, 
+                       val_range=[-1,1], 
+                       aro_range=[0,1], 
+                       lambda_ccc=2,
+                       lambda_v=1,
+                       lambda_a=1)
 
     train_loader = DataLoader(
         OMGDataset(train_list_path, train_data_path),
         batch_size=bs,
         shuffle=True,
-        num_workers=4,
+        num_workers=1,
     )
     val_loader = DataLoader(
         OMGDataset(val_list_path, validation_data_path),
         batch_size=bs,
         shuffle=False,
-        num_workers=4,
+        num_workers=1,
     )
 
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
@@ -316,10 +339,10 @@ if __name__ == "__main__":
                 save_model(
                     model,
                     (
-                        "./pth/model_convnext_%s_%.4f_%.4f.pth"
-                        % (epoch, arou_ccc, vale_ccc)
+                        "./pth/model_%s_%s_%s_%.4f_%.4f.pth"
+                        % (model_name, loss_type, epoch, arou_ccc, vale_ccc)
                     ),
-                    # "./pth/model_lstm_{}_{}_{}.pth".format(
+                    # "./pth_ourcc/model_lstm_{}_{}_{}.pth".format(
                     #     epoch, round(arou_ccc, 4), round(vale_ccc, 4)
                     # ),
                 )
