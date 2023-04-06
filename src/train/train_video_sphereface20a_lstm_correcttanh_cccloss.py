@@ -16,8 +16,7 @@ from torch import Tensor
 from tqdm import tqdm
 
 path.append("./")
-from src.models.sfnet import sfnet20
-from src.utils import load_backbone_weight
+import net_sphere
 from calculateEvaluationCCC import calculateCCC
 from src.utils.loss import VALoss
 
@@ -25,7 +24,7 @@ from src.utils.loss import VALoss
 # Define parameters
 use_cuda: bool = torch.cuda.is_available()
 # use_mps: bool = torch.backends.mps.is_available()
-use_mps = False
+use_mps = True
 
 lr = 0.01
 bs = 32
@@ -34,15 +33,15 @@ lr_steps = [8, 16, 24]
 
 gd = 20  # clip gradient
 eval_freq = 3
-print_freq = 20
-num_worker = 4
+print_freq = 18
+num_worker = 2
 num_seg = 16
 flag_biLSTM = True
 
 classnum = 7
-correct_img_size = (112, 112, 3)
+correct_img_size = (112, 96, 3)
 
-model_name = 'sfnet_lstm'
+model_name = 'sphereface20a_lstm_correcttanh'
 loss_type = 'cccloss'
 
 
@@ -52,10 +51,11 @@ class Net(torch.nn.Module):
         self.backbone = backbone
         self.linear = torch.nn.Linear(512, 2)
         self.tanh = torch.nn.Tanh()
+        self.sigmoid = torch.nn.Sigmoid()
         self.avgPool = torch.nn.AvgPool2d((num_seg, 1), stride=1)
         self.LSTM = torch.nn.LSTM(
             backbone_output_size, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
-        )  # Input dim, hidden dim, num_layer
+        )
         for name, param in self.LSTM.named_parameters():
             if "bias" in name:
                 torch.nn.init.constant(param, 0.0)
@@ -89,9 +89,13 @@ class Net(torch.nn.Module):
         x = self.backbone(x)
         x = self.sequentialLSTM(x)
         x = self.linear(x)
-        x = self.tanh(x)
+        
+        arousal = x[:, 0]
+        valence = x[:, 1]
+        # valence = self.tanh(valence)
+        # arousal = self.sigmoid(arousal)
 
-        return x
+        return torch.stack([arousal, valence], dim=1)
 
 
 def printoneline(*argv):
@@ -131,7 +135,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda(non_blocking=True)
         elif use_mps:
-            inputs, targets = inputs.to("mps"), targets.to("mps", non_blocking=True)
+            inputs, targets = inputs.to("mps", non_blocking=False), targets.to("mps", non_blocking=False)
 
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
@@ -158,7 +162,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
 
         if i % print_freq == 0:
             printoneline(
-                dt(), "Epoch=%d Loss=%.4f\n" % (epoch, train_loss / (batch_idx + 1))
+                dt(), "Epoch=%d Loss=%.4f \n" % (epoch, train_loss / (batch_idx + 1))
             )
         batch_idx += 1
 
@@ -177,7 +181,7 @@ def validate(val_loader, model, criterion, epoch):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda()
         elif use_mps:
-            inputs, targets = inputs.to("mps"), targets.to("mps")
+            inputs, targets = inputs.to("mps", non_blocking=False), targets.to("mps", non_blocking=False)
 
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
@@ -268,33 +272,29 @@ if __name__ == "__main__":
 
     train_list_path = "./support_tables/train_list_lstm.txt"
     val_list_path = "./support_tables/validation_list_lstm.txt"
+    augmentation: bool = True
     
     train_data_path: str = (
-        "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Train_Set/trimmed_faces"
+        "../Train_Set/trimmed_faces"
     )
     device: str = 'cuda' if use_cuda else ('mps' if use_mps else 'cpu')
-    validation_data_path: str = "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Validation_Set/trimmed_faces"
+    validation_data_path: str = "../Validation_Set/trimmed_faces"
     
-    model_path = "./model/sfnet20r_vggface.pth"
-    # sphereface 20 net without batch normalization, trained on VGG face for 80000 iterations
-    backbone = sfnet20()
-    backbone.load_state_dict(load_backbone_weight(weights_path=model_path, 
-                                                  loading_device=device),
-                             strict=True) # while should not be used, I tested and only the final prediction layers are indeed missing
-    # sphereface = getattr(net_sphere, "sphere20a")()
-    # sphereface.load_state_dict(torch.load(model_path))
-    # sphereface.feature = (
-    #     True  # remove the last fc layer because we need to use LSTM first
-    # )
+    model_path = "./model/sphere20a_20171020.pth"
+    backbone = getattr(net_sphere, "sphere20a")()
+    if augmentation:
+        backbone.load_state_dict(torch.load(model_path))
+    backbone.feature = (
+        True  # remove the last fc layer because we need to use LSTM first
+    )
 
     model = Net(backbone, backbone_output_size=512)
 
     if use_cuda:
         model.cuda()
     elif use_mps:
-        model.to("mps")
+        model.to("mps", non_blocking=False)
 
-    # criterion = torch.nn.MSELoss()
     criterion = VALoss(loss_type='CCC', 
                        digitize_num=1, 
                        val_range=[-1,1], 
@@ -307,13 +307,13 @@ if __name__ == "__main__":
         OMGDataset(train_list_path, train_data_path),
         batch_size=bs,
         shuffle=True,
-        num_workers=1,
+        num_workers=num_worker,
     )
     val_loader = DataLoader(
         OMGDataset(val_list_path, validation_data_path),
         batch_size=bs,
         shuffle=False,
-        num_workers=1,
+        num_workers=num_worker,
     )
 
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
@@ -342,7 +342,4 @@ if __name__ == "__main__":
                         "./pth/model_%s_%s_%s_%.4f_%.4f.pth"
                         % (model_name, loss_type, epoch, arou_ccc, vale_ccc)
                     ),
-                    # "./pth_ourcc/model_lstm_{}_{}_{}.pth".format(
-                    #     epoch, round(arou_ccc, 4), round(vale_ccc, 4)
-                    # ),
                 )

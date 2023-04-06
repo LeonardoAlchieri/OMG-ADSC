@@ -10,20 +10,20 @@ import torch.optim as optim
 from numpy.random import randint
 from skimage import io
 from skimage.transform import resize
-from torch import Tensor
 from torch.nn.utils import clip_grad_norm
 from torch.utils.data import DataLoader, Dataset
+from torch import Tensor
 from tqdm import tqdm
 
 path.append("./")
+from src.models.former_dfer import FormerDfer
 from src.test import test
-from src.models.dan import DAN
 
 # FIXME: these should not be hardcoded
 # Define parameters
 use_cuda: bool = torch.cuda.is_available()
-use_mps: bool = torch.backends.mps.is_available()
-# use_mps = False
+# use_mps: bool = torch.backends.mps.is_available()
+use_mps = False
 
 lr = 0.01
 bs = 32
@@ -33,23 +33,26 @@ lr_steps = [8, 16, 24]
 gd = 20  # clip gradient
 eval_freq = 3
 print_freq = 20
-num_worker = 10
+num_worker = 4
 num_seg = 16
 flag_biLSTM = True
 
 classnum = 7
-correct_img_size = (112, 96, 3)
+correct_img_size = (112, 112, 3)
+
+model_name = 'dfer'
+loss_type = 'cccloss'
 
 
 class Net(torch.nn.Module):
-    def __init__(self, backbone):
+    def __init__(self, backbone, backbone_output_size: int = 521):
         super(Net, self).__init__()
         self.backbone = backbone
         self.linear = torch.nn.Linear(512, 2)
         self.tanh = torch.nn.Tanh()
         self.avgPool = torch.nn.AvgPool2d((num_seg, 1), stride=1)
         self.LSTM = torch.nn.LSTM(
-            512, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
+            backbone_output_size, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
         )  # Input dim, hidden dim, num_layer
         for name, param in self.LSTM.named_parameters():
             if "bias" in name:
@@ -57,32 +60,9 @@ class Net(torch.nn.Module):
             elif "weight" in name:
                 torch.nn.init.orthogonal(param)
 
-    def sequentialLSTM(self, input, hidden=None):
-
-        input_lstm = input.view([-1, num_seg, input.shape[1]])
-        batch_size = input_lstm.shape[0]
-        feature_size = input_lstm.shape[2]
-
-        self.LSTM.flatten_parameters()
-
-        output_lstm, hidden = self.LSTM(input_lstm)
-        if flag_biLSTM:
-            output_lstm = (
-                output_lstm.contiguous()
-                .view(batch_size, output_lstm.size(1), 2, -1)
-                .sum(2)
-                .view(batch_size, output_lstm.size(1), -1)
-            )
-
-        # avarage the output of LSTM
-        output_lstm = output_lstm.view(batch_size, 1, num_seg, -1)
-        out = self.avgPool(output_lstm)
-        out = out.view(batch_size, -1)
-        return out
 
     def forward(self, x):
         x = self.backbone(x)
-        x = self.sequentialLSTM(x)
         x = self.linear(x)
         x = self.tanh(x)
 
@@ -105,6 +85,7 @@ def dt():
 def save_model(model, filename):
     state = model.state_dict()
     torch.save(state, filename)
+
 
 
 class OMGDataset(Dataset):
@@ -168,17 +149,18 @@ class OMGDataset(Dataset):
 if __name__ == "__main__":
 
     test_list_path = "./support_tables/test_list_lstm.txt"
-    train_res_weights: str = "./pth_best/dan/dan_lstm_corecttanh_mseloss_26_0.2400_0.3399.pth"
     test_data_path: str = (
         "../Test_Set/trimmed_faces"
     )
 
-    model_name: str = "dan_lstm_correcttanh_mseloss"
-
+    train_res_weights: str = "./pth_best/former_dfer/dfer_temporaltransformer_mseloss_14_0.2089_0.2784.pth"
+    model_name: str = "dfer_temporaltransformer_mseloss"
+    
     device: str = "cuda" if use_cuda else ("mps" if use_mps else "cpu")
-    backbone = DAN(num_class=8)
+    
+    backbone = FormerDfer(use_temporal_part=True)
 
-    model = Net(backbone)
+    model = Net(backbone, backbone_output_size=512)
     model.load_state_dict(torch.load(train_res_weights, map_location=device))
 
     if use_cuda:

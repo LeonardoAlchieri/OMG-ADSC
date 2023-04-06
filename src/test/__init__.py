@@ -16,7 +16,7 @@ use_mps = False
 # FIXME: these should not be hardcoded
 # Define parameters
 
-def test(val_loader, model, model_name, epoch, reshape_mode: int = 1):
+def test(val_loader, model, model_name, epoch, ground_truth_path: str, reshape_mode: int = 1):
     model.eval()
 
     err_arou = 0.0
@@ -59,7 +59,7 @@ def test(val_loader, model, model_name, epoch, reshape_mode: int = 1):
     txt_result.close()
 
     arouCCC, valeCCC = calculateCCC(
-        "./results/omg_TestVideos_WithLabels.csv",
+        ground_truth_path,
         "results/test_%s_%d.csv" % (model_name, epoch),
     )
     return (arouCCC, valeCCC)
