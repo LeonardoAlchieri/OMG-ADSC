@@ -17,13 +17,14 @@ from tqdm import tqdm
 
 path.append("./")
 import net_sphere
-from src.test import test
+from calculateEvaluationCCC import calculateCCC
+from src.utils.loss import VALoss
 
 # FIXME: these should not be hardcoded
 # Define parameters
 use_cuda: bool = torch.cuda.is_available()
-# use_mps: bool = torch.backends.mps.is_available()
-use_mps = True
+use_mps: bool = torch.backends.mps.is_available()
+# use_mps = True
 
 lr = 0.01
 bs = 32
@@ -33,12 +34,15 @@ lr_steps = [8, 16, 24]
 gd = 20  # clip gradient
 eval_freq = 3
 print_freq = 18
-num_worker = 8
+num_worker = 10
 num_seg = 16
 flag_biLSTM = True
 
 classnum = 7
 correct_img_size = (112, 96, 3)
+
+model_name = 'sphereface20a_lstm_correcttanh'
+loss_type = 'mseloss_NOPRETRAIN'
 
 
 class Net(torch.nn.Module):
@@ -51,10 +55,7 @@ class Net(torch.nn.Module):
         self.avgPool = torch.nn.AvgPool2d((num_seg, 1), stride=1)
         self.LSTM = torch.nn.LSTM(
             backbone_output_size, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
-        )  # Input dim, hidden dim, num_layer
-        # self.LSTM = torch.nn.GRU(
-        #     backbone_output_size, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
-        # )  # Input dim, hidden dim, num_layer
+        )
         for name, param in self.LSTM.named_parameters():
             if "bias" in name:
                 torch.nn.init.constant(param, 0.0)
@@ -114,6 +115,99 @@ def save_model(model, filename):
     state = model.state_dict()
     torch.save(state, filename)
 
+
+def train(train_loader, model, criterion, optimizer, epoch):
+    model.train()
+
+    train_loss = 0
+    correct = 0
+    total = 0
+    batch_idx = 0
+
+    for i, (inputs, targets, _) in tqdm(
+        enumerate(train_loader), desc="Training batch", total=len(train_loader)
+    ):
+        inputs: Tensor
+        targets: Tensor
+
+        optimizer.zero_grad()
+
+        if use_cuda:
+            inputs, targets = inputs.cuda(), targets.cuda(non_blocking=True)
+        elif use_mps:
+            inputs, targets = inputs.to("mps", non_blocking=False), targets.to("mps", non_blocking=False)
+
+        inputs = torch.autograd.Variable(inputs)
+        targets = torch.autograd.Variable(targets)
+
+        inputs = inputs.view((-1, 3) + inputs.size()[-2:])
+        outputs = model(inputs)
+
+        loss = criterion(outputs, targets)
+
+        loss.backward()
+        optimizer.step()
+
+        # tsn uses clipping gradient
+        if gd is not None:
+            total_norm = clip_grad_norm(model.parameters(), gd)
+            if total_norm > gd:
+                print(
+                    "clippling gradient: {} with coef {}".format(
+                        total_norm, gd / total_norm
+                    )
+                )
+
+        train_loss += loss.data.item()
+
+        if i % print_freq == 0:
+            printoneline(
+                dt(), "Epoch=%d Loss=%.4f \n" % (epoch, train_loss / (batch_idx + 1))
+            )
+        batch_idx += 1
+
+
+def validate(val_loader, model, criterion, epoch):
+    model.eval()
+
+    err_arou = 0.0
+    err_vale = 0.0
+
+    txt_result = open("results/val_%s_%s_%d.csv" % (model_name, loss_type, epoch), "w")
+    txt_result.write("video,utterance,arousal,valence\n")
+    for (inputs, targets, (vid, utter)) in tqdm(val_loader, "Validation batch"):
+        inputs: Tensor
+        targets: Tensor
+        if use_cuda:
+            inputs, targets = inputs.cuda(), targets.cuda()
+        elif use_mps:
+            inputs, targets = inputs.to("mps", non_blocking=False), targets.to("mps", non_blocking=False)
+
+        inputs = torch.autograd.Variable(inputs)
+        targets = torch.autograd.Variable(targets)
+
+        inputs = inputs.view((-1, 3) + inputs.size()[-2:])
+        outputs = model(inputs)
+
+        outputs = outputs.data.cpu().numpy()
+        targets = targets.data.cpu().numpy()
+
+        err_arou += np.sum((outputs[:, 0] - targets[:, 0]) ** 2)
+        err_vale += np.sum((outputs[:, 1] - targets[:, 1]) ** 2)
+
+        for i in range(len(vid)):
+            out = outputs
+            txt_result.write(
+                "%s,%s.mp4,%f,%f\n" % (vid[i], utter[i], out[i][0], out[i][1])
+            )
+
+    txt_result.close()
+
+    arouCCC, valeCCC = calculateCCC(
+        "./results/omg_ValidationVideos.csv",
+        "results/val_%s_%s_%d.csv" % (model_name, loss_type, epoch),
+    )
+    return (arouCCC, valeCCC)
 
 
 class OMGDataset(Dataset):
@@ -176,41 +270,70 @@ class OMGDataset(Dataset):
 
 if __name__ == "__main__":
 
-    test_list_path = "./support_tables/validation_list_lstm.txt"
-    test_data_path: str = (
-        "../Validation_Set/trimmed_faces"
+    train_list_path = "./support_tables/train_list_lstm.txt"
+    val_list_path = "./support_tables/validation_list_lstm.txt"
+    augmentation: bool = False
+    
+    train_data_path: str = (
+        "../Train_Set/trimmed_faces"
     )
-    # ground_truth_path: str = "./results/omg_TestVideos_WithLabels.csv"
-    ground_truth_path: str = "./results/omg_ValidationVideos.csv"
-
-    train_res_weights: str = "./pth_best/sphereface/sphereface20a_lstm_cccloss_NOPRETRAIN_8_0.2794_0.3952.pth"
-    model_name: str = "sphereface20a_lstm_mseloss"
+    device: str = 'cuda' if use_cuda else ('mps' if use_mps else 'cpu')
+    validation_data_path: str = "../Validation_Set/trimmed_faces"
     
-    device: str = "cuda" if use_cuda else ("mps" if use_mps else "cpu")
-    
-
+    model_path = "./model/sphere20a_20171020.pth"
     backbone = getattr(net_sphere, "sphere20a")()
+    if augmentation:
+        backbone.load_state_dict(torch.load(model_path))
     backbone.feature = (
         True  # remove the last fc layer because we need to use LSTM first
     )
 
     model = Net(backbone, backbone_output_size=512)
-    model.load_state_dict(torch.load(train_res_weights, map_location=device))
 
     if use_cuda:
         model.cuda()
     elif use_mps:
         model.to("mps", non_blocking=False)
 
+    criterion = torch.nn.MSELoss()
 
-    test_loader = DataLoader(
-        OMGDataset(test_list_path, test_data_path),
+    train_loader = DataLoader(
+        OMGDataset(train_list_path, train_data_path),
+        batch_size=bs,
+        shuffle=True,
+        num_workers=num_worker,
+    )
+    val_loader = DataLoader(
+        OMGDataset(val_list_path, validation_data_path),
         batch_size=bs,
         shuffle=False,
         num_workers=num_worker,
     )
 
-    best_arou_ccc, best_vale_ccc = test(
-        test_loader, model, model_name, 0, ground_truth_path=ground_truth_path, reshape_mode=2
-    )
-    print(best_arou_ccc, best_vale_ccc)
+    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
+
+    best_arou_ccc, best_vale_ccc = validate(val_loader, model, criterion, 0)
+
+    for epoch in tqdm(range(n_epoch), desc="Epoch"):
+        if epoch in lr_steps:
+            lr *= 0.1
+            optimizer = optim.SGD(
+                model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4
+            )
+
+        train(train_loader, model, criterion, optimizer, epoch)
+
+        # evaluate on validation set
+        if (epoch + 1) % eval_freq == 0 or epoch == n_epoch - 1:
+            arou_ccc, vale_ccc = validate(val_loader, model, criterion, epoch)
+
+            if (arou_ccc + vale_ccc) > (best_arou_ccc + best_vale_ccc):
+                best_arou_ccc = arou_ccc
+                best_vale_ccc = vale_ccc
+                save_model(
+                    model,
+                    (
+                        "./pth/model_%s_%s_%s_%.4f_%.4f.pth"
+                        % (model_name, loss_type, epoch, arou_ccc, vale_ccc)
+                    ),
+                )

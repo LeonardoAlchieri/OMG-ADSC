@@ -23,8 +23,8 @@ from src.utils.loss import VALoss
 # FIXME: these should not be hardcoded
 # Define parameters
 use_cuda: bool = torch.cuda.is_available()
-# use_mps: bool = torch.backends.mps.is_available()
-use_mps = True
+use_mps: bool = torch.backends.mps.is_available()
+# use_mps = True
 
 lr = 0.01
 bs = 32
@@ -34,7 +34,7 @@ lr_steps = [8, 16, 24]
 gd = 20  # clip gradient
 eval_freq = 3
 print_freq = 18
-num_worker = 2
+num_worker = 20
 num_seg = 16
 flag_biLSTM = True
 
@@ -272,7 +272,7 @@ if __name__ == "__main__":
 
     train_list_path = "./support_tables/train_list_lstm.txt"
     val_list_path = "./support_tables/validation_list_lstm.txt"
-    augmentation: bool = True
+    augmentation: bool = False
     
     train_data_path: str = (
         "../Train_Set/trimmed_faces"
