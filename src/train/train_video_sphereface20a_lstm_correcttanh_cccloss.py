@@ -24,7 +24,7 @@ from src.utils.loss import VALoss
 # Define parameters
 use_cuda: bool = torch.cuda.is_available()
 use_mps: bool = torch.backends.mps.is_available()
-# use_mps = True
+# use_mps = False
 
 lr = 0.01
 bs = 32
@@ -34,14 +34,14 @@ lr_steps = [8, 16, 24]
 gd = 20  # clip gradient
 eval_freq = 3
 print_freq = 18
-num_worker = 20
+num_worker = 2
 num_seg = 16
 flag_biLSTM = True
 
 classnum = 7
 correct_img_size = (112, 96, 3)
 
-model_name = 'sphereface20a_lstm_correcttanh'
+model_name = 'sphereface20a_lstm_correcttanh_MACSTUDIO'
 loss_type = 'cccloss'
 
 
@@ -275,10 +275,10 @@ if __name__ == "__main__":
     augmentation: bool = False
     
     train_data_path: str = (
-        "../Train_Set/trimmed_faces"
+        "~/Datasets/OMGEmotionChallenge/Train_Set/faces2"
     )
     device: str = 'cuda' if use_cuda else ('mps' if use_mps else 'cpu')
-    validation_data_path: str = "../Validation_Set/trimmed_faces"
+    validation_data_path: str = "~/Datasets/OMGEmotionChallenge/Validation_Set/trimmed_faces"
     
     model_path = "./model/sphere20a_20171020.pth"
     backbone = getattr(net_sphere, "sphere20a")()

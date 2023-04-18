@@ -23,7 +23,7 @@ from src.test import test
 # Define parameters
 use_cuda: bool = torch.cuda.is_available()
 # use_mps: bool = torch.backends.mps.is_available()
-use_mps = False
+use_mps = True
 
 lr = 0.01
 bs = 32
@@ -173,7 +173,7 @@ if __name__ == "__main__":
         "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Test_Set/trimmed_faces"
     )
 
-    model_name = "convnext_lstm_mseloss"
+    model_name = "convnext_lstm_mseloss_TEST"
 
     device: str = "cuda" if use_cuda else ("mps" if use_mps else "cpu")
 
