@@ -25,7 +25,7 @@ from src.utils.loss import VALoss
 # Define parameters
 use_cuda: bool = torch.cuda.is_available()
 use_mps: bool = torch.backends.mps.is_available()
-# use_mps = True
+# use_mps = False
 
 lr = 0.01
 bs = 32

@@ -23,7 +23,7 @@ from src.test import test
 # Define parameters
 use_cuda: bool = torch.cuda.is_available()
 # use_mps: bool = torch.backends.mps.is_available()
-use_mps = False
+use_mps = True
 
 lr = 0.01
 bs = 16
