@@ -3,8 +3,8 @@ import sys
 from os.path import join as join_paths
 from sys import path
 
-import random
 import numpy as np
+import random
 import pandas as pd
 import torch
 import torch.optim as optim
@@ -18,14 +18,17 @@ from tqdm import tqdm
 
 path.append("./")
 import net_sphere
-from calculateEvaluationCCC import calculateCCC
+from calculateEvaluationCCC_ours import calculateCCC
 from src.utils.loss import VALoss
+from src.utils import load_backbone_weight
+from src.models.swine import Head, swin_3d_tiny
 
 # FIXME: these should not be hardcoded
 # Define parameters
 use_cuda: bool = torch.cuda.is_available()
-use_mps: bool = torch.backends.mps.is_available()
-# use_mps = True
+# use_cuda = False
+# use_mps: bool = torch.backends.mps.is_available()
+use_mps = False
 
 lr = 0.01
 bs = 32
@@ -34,70 +37,34 @@ lr_steps = [8, 16, 24]
 
 gd = 20  # clip gradient
 eval_freq = 3
-print_freq = 18
-num_worker = 9
+print_freq = 20
+num_worker = 10
 num_seg = 16
-flag_biLSTM = True
 
 classnum = 7
 correct_img_size = (112, 96, 3)
-
-model_name = 'sphereface20a_lstm_correcttanh_FINAL'
-loss_type = 'cccloss'
+model_name: str = "swine3dtiny_transformer"
+loss_type: str = "mse"
+pretrain: str = ""
 
 
 class Net(torch.nn.Module):
-    def __init__(self, backbone, backbone_output_size: int = 521):
+    def __init__(self, backbone):
         super(Net, self).__init__()
         self.backbone = backbone
-        self.linear = torch.nn.Linear(512, 2)
-        self.tanh = torch.nn.Tanh()
-        self.sigmoid = torch.nn.Sigmoid()
-        self.avgPool = torch.nn.AvgPool2d((num_seg, 1), stride=1)
-        self.LSTM = torch.nn.LSTM(
-            backbone_output_size, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
-        )
-        for name, param in self.LSTM.named_parameters():
-            if "bias" in name:
-                torch.nn.init.constant(param, 0.0)
-            elif "weight" in name:
-                torch.nn.init.orthogonal(param)
-
-    def sequentialLSTM(self, input, hidden=None):
-
-        input_lstm = input.view([-1, num_seg, input.shape[1]])
-        batch_size = input_lstm.shape[0]
-        feature_size = input_lstm.shape[2]
-
-        self.LSTM.flatten_parameters()
-
-        output_lstm, hidden = self.LSTM(input_lstm)
-        if flag_biLSTM:
-            output_lstm = (
-                output_lstm.contiguous()
-                .view(batch_size, output_lstm.size(1), 2, -1)
-                .sum(2)
-                .view(batch_size, output_lstm.size(1), -1)
-            )
-
-        # avarage the output of LSTM
-        output_lstm = output_lstm.view(batch_size, 1, num_seg, -1)
-        out = self.avgPool(output_lstm)
-        out = out.view(batch_size, -1)
-        return out
+        self.head_val = Head(in_channels=768, hidden_channels=64)
+        self.head_aro = Head(in_channels=768, hidden_channels=64)
 
     def forward(self, x):
+        x = x.permute(0, 2, 1, 3, 4).contiguous()  # BxFxCxHxW -> BxFxCxHxW
         x = self.backbone(x)
-        x = self.sequentialLSTM(x)
-        x = self.linear(x)
-        # x = self.tanh(x)
-        arousal = x[:, 0]
-        valence = x[:, 1]
-        valence = self.tanh(valence)
-        arousal = self.sigmoid(arousal)
-
-        return torch.stack([arousal, valence], dim=1)
-        # return x
+        x_val = self.head_val(x).reshape(
+            -1,
+        )
+        x_aro = self.head_aro(x).reshape(
+            -1,
+        )
+        return torch.stack([x_val, x_aro], dim=1)
 
 
 def printoneline(*argv):
@@ -137,12 +104,15 @@ def train(train_loader, model, criterion, optimizer, epoch):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda(non_blocking=True)
         elif use_mps:
-            inputs, targets = inputs.to("mps", non_blocking=False), targets.to("mps", non_blocking=False)
+            inputs, targets = inputs.to("mps"), targets.to("mps", non_blocking=True)
 
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
 
-        inputs = inputs.view((-1, 3) + inputs.size()[-2:])
+        # inputs = inputs.view((-1, 3) + inputs.size()[-2:])
+        inputs = inputs.reshape(
+            inputs.shape[0], -1, 3, inputs.shape[-2], inputs.shape[-1]
+        )
         outputs = model(inputs)
 
         loss = criterion(outputs, targets)
@@ -164,18 +134,18 @@ def train(train_loader, model, criterion, optimizer, epoch):
 
         if i % print_freq == 0:
             printoneline(
-                dt(), "Epoch=%d Loss=%.4f \n" % (epoch, train_loss / (batch_idx + 1))
+                dt(), "Epoch=%d Loss=%.4f\n" % (epoch, train_loss / (batch_idx + 1))
             )
         batch_idx += 1
 
 
-def validate(val_loader, model, epoch, ground_truth_file: str):
+def validate(val_loader, model, criterion, epoch):
     model.eval()
 
     err_arou = 0.0
     err_vale = 0.0
 
-    txt_result = open("results/val_%s_%s_%d.csv" % (model_name, loss_type, epoch), "w")
+    txt_result = open("results/val_convnext_%d.csv" % epoch, "w")
     txt_result.write("video,utterance,arousal,valence\n")
     for (inputs, targets, (vid, utter)) in tqdm(val_loader, "Validation batch"):
         inputs: Tensor
@@ -183,12 +153,14 @@ def validate(val_loader, model, epoch, ground_truth_file: str):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda()
         elif use_mps:
-            inputs, targets = inputs.to("mps", non_blocking=False), targets.to("mps", non_blocking=False)
+            inputs, targets = inputs.to("mps"), targets.to("mps")
 
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
 
-        inputs = inputs.view((-1, 3) + inputs.size()[-2:])
+        inputs = inputs.reshape(
+            inputs.shape[0], -1, 3, inputs.shape[-2], inputs.shape[-1]
+        )
         outputs = model(inputs)
 
         outputs = outputs.data.cpu().numpy()
@@ -206,8 +178,8 @@ def validate(val_loader, model, epoch, ground_truth_file: str):
     txt_result.close()
 
     arouCCC, valeCCC = calculateCCC(
-        ground_truth_file,
-        "results/val_%s_%s_%d.csv" % (model_name, loss_type, epoch),
+        "./results/omg_ValidationVideos.csv",
+        "results/val_convnext_%d.csv" % epoch,
     )
     return (arouCCC, valeCCC)
 
@@ -272,49 +244,38 @@ class OMGDataset(Dataset):
 
 if __name__ == "__main__":
 
-    train_list_path = "./support_tables/train_validation_list.txt"
-    val_list_path = "./support_tables/test_list_lstm.txt"
-    ground_truth_file = "../omg_TestVideos_WithLabels.csv"
-    augmentation: bool = True
-    
-    train_data_path: str = (
-        "../Train_Validation_Set/trimmed_faces"
-    )
-    device: str = 'cuda' if use_cuda else ('mps' if use_mps else 'cpu')
-    validation_data_path: str = "../Test_Set/trimmed_faces"
-    
-    # set the seed for reproducibility
-    torch.manual_seed(696969)
-    torch.cuda.manual_seed(696969)
-    np.random.seed(696969)
-    random.seed(696969)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    
-    model_path = "./model/sphere20a_20171020.pth"
-    backbone = getattr(net_sphere, "sphere20a")()
-    if augmentation:
-        backbone.load_state_dict(torch.load(model_path))
-    backbone.feature = (
-        True  # remove the last fc layer because we need to use LSTM first
+    torch.manual_seed(42)
+    random.seed(42)
+    np.random.seed(42)
+
+    train_list_path = "./support_tables/train_list_lstm.txt"
+    val_list_path = "./support_tables/validation_list_lstm.txt"
+    model_path = "./model/swin_tiny_patch244_window877_kinetics400_1k.pth"
+    train_data_path: str = "/data/leonardo/OMGEmotionChallenge/Train_Set/trimmed_faces"
+    validation_data_path: str = (
+        "/data/leonardo/OMGEmotionChallenge/Validation_Set/trimmed_faces"
     )
 
-    model = Net(backbone, backbone_output_size=512)
-    # pretrained_path: str = "./pth_best/sphereface/sphereface20a_lstm_cccloss_14_0.3284_0.4344.pth"
-    # model.load_state_dict(torch.load(pretrained_path), strict=True)
+    device: str = "cuda" if use_cuda else ("mps" if use_mps else "cpu")
+    backbone = swin_3d_tiny()
+    backbone.load_state_dict(
+        load_backbone_weight(
+            weights_path=model_path,
+            loading_device=device,
+            remove_heads=True,
+            head_keyword="cls_head",
+        ),
+        strict=True,
+    )
+
+    model = Net(backbone)
 
     if use_cuda:
         model.cuda()
     elif use_mps:
-        model.to("mps", non_blocking=False)
+        model.to("mps")
 
-    criterion = VALoss(loss_type='CCC', 
-                       digitize_num=1, 
-                       val_range=[-1,1], 
-                       aro_range=[0,1], 
-                       lambda_ccc=2,
-                       lambda_v=1,
-                       lambda_a=1)
+    criterion = torch.nn.MSELoss()
 
     train_loader = DataLoader(
         OMGDataset(train_list_path, train_data_path),
@@ -331,7 +292,7 @@ if __name__ == "__main__":
 
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
 
-    best_arou_ccc, best_vale_ccc = validate(val_loader, model, 0, ground_truth_file)
+    best_arou_ccc, best_vale_ccc = validate(val_loader, model, criterion, 0)
 
     for epoch in tqdm(range(n_epoch), desc="Epoch"):
         if epoch in lr_steps:
@@ -344,7 +305,7 @@ if __name__ == "__main__":
 
         # evaluate on validation set
         if (epoch + 1) % eval_freq == 0 or epoch == n_epoch - 1:
-            arou_ccc, vale_ccc = validate(val_loader, model, epoch, ground_truth_file)
+            arou_ccc, vale_ccc = validate(val_loader, model, criterion, epoch)
 
             if (arou_ccc + vale_ccc) > (best_arou_ccc + best_vale_ccc):
                 best_arou_ccc = arou_ccc
@@ -352,7 +313,7 @@ if __name__ == "__main__":
                 save_model(
                     model,
                     (
-                        "./pth/model_%s_%s_%s_%.4f_%.4f.pth"
-                        % (model_name, loss_type, epoch, arou_ccc, vale_ccc)
+                        "./pth/model_%s_%s_%s_%s_%.4f_%.4f.pth"
+                        % (model_name, loss_type, pretrain, epoch, arou_ccc, vale_ccc)
                     ),
                 )

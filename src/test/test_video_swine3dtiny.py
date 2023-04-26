@@ -6,17 +6,13 @@ from sys import path
 import numpy as np
 import pandas as pd
 import torch
-import torch.optim as optim
 from numpy.random import randint
 from skimage import io
 from skimage.transform import resize
-from torch.nn.utils import clip_grad_norm
 from torch.utils.data import DataLoader, Dataset
-from torch import Tensor
-from tqdm import tqdm
 
 path.append("./")
-from src.models.former_dfer import FormerDfer
+from src.models.swine import Head, swin_3d_tiny
 from src.test import test
 
 # FIXME: these should not be hardcoded
@@ -33,40 +29,30 @@ lr_steps = [8, 16, 24]
 gd = 20  # clip gradient
 eval_freq = 3
 print_freq = 20
-num_worker = 16
+num_worker = 10
 num_seg = 16
-flag_biLSTM = True
 
 classnum = 7
-correct_img_size = (112, 112, 3)
-
-model_name = 'dfer'
-loss_type = 'cccloss'
+correct_img_size = (112, 96, 3)
 
 
 class Net(torch.nn.Module):
-    def __init__(self, backbone, backbone_output_size: int = 521):
+    def __init__(self, backbone):
         super(Net, self).__init__()
         self.backbone = backbone
-        self.linear = torch.nn.Linear(512, 2)
-        self.tanh = torch.nn.Tanh()
-        self.avgPool = torch.nn.AvgPool2d((num_seg, 1), stride=1)
-        self.LSTM = torch.nn.LSTM(
-            backbone_output_size, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
-        )  # Input dim, hidden dim, num_layer
-        for name, param in self.LSTM.named_parameters():
-            if "bias" in name:
-                torch.nn.init.constant(param, 0.0)
-            elif "weight" in name:
-                torch.nn.init.orthogonal(param)
-
+        self.head_val = Head(in_channels=768, hidden_channels=64)
+        self.head_aro = Head(in_channels=768, hidden_channels=64)
 
     def forward(self, x):
+        x = x.permute(0, 2, 1, 3, 4).contiguous()  # BxFxCxHxW -> BxFxCxHxW
         x = self.backbone(x)
-        x = self.linear(x)
-        x = self.tanh(x)
-
-        return x
+        x_val = self.head_val(x).reshape(
+            -1,
+        )
+        x_aro = self.head_aro(x).reshape(
+            -1,
+        )
+        return torch.stack([x_val, x_aro], dim=1)
 
 
 def printoneline(*argv):
@@ -85,7 +71,6 @@ def dt():
 def save_model(model, filename):
     state = model.state_dict()
     torch.save(state, filename)
-
 
 
 class OMGDataset(Dataset):
@@ -148,22 +133,19 @@ class OMGDataset(Dataset):
 
 if __name__ == "__main__":
 
-    test_list_path = "./support_tables/test_list_lstm.txt"
-    test_data_path: str = (
-        "../Test_Set/trimmed_faces"
-    )
-    
-    ground_truth_path: str = "./results/omg_TestVideos_WithLabels.csv"
-    # ground_truth_path: str = "./results/omg_ValidationVideos.csv"
+    test_list_path = "./support_tables/validation_list_lstm.txt"
+    test_data_path: str = "/data/leonardo/OMGEmotionChallenge/Validation_Set/trimmed_faces"
+    ground_truth_path: str = "./results/omg_ValidationVideos.csv"
 
-    train_res_weights: str = "./pth_best/former_dfer/dfer_temporaltransformer_mseloss_14_0.2089_0.2784.pth"
-    model_name: str = "dfer_temporaltransformer_mseloss"
-    
+    train_res_weights: str = "./pth_best/swine3dtiny/swine3dtiny_transformer_ccc_NOPRETRAIN_11_0.0370_0.1762.pth"
+
+    model_name = "swine3dtiny_transformer_cccloss_NOPRETRAIN"
+
     device: str = "cuda" if use_cuda else ("mps" if use_mps else "cpu")
-    
-    backbone = FormerDfer(use_temporal_part=True)
 
-    model = Net(backbone, backbone_output_size=512)
+    backbone = swin_3d_tiny()
+
+    model = Net(backbone)
     model.load_state_dict(torch.load(train_res_weights, map_location=device))
 
     if use_cuda:
@@ -179,6 +161,11 @@ if __name__ == "__main__":
     )
 
     best_arou_ccc, best_vale_ccc = test(
-        test_loader, model, model_name, 0, ground_truth_path=ground_truth_path, reshape_mode=1
+        val_loader=test_loader,
+        model=model,
+        model_name=model_name,
+        epoch=0,
+        ground_truth_path=ground_truth_path,
+        reshape_mode=1,
     )
     print(best_arou_ccc, best_vale_ccc)

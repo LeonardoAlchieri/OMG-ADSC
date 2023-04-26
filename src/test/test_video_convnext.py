@@ -26,14 +26,14 @@ use_cuda: bool = torch.cuda.is_available()
 use_mps = False
 
 lr = 0.01
-bs = 32
+bs = 16
 n_epoch = 30
 lr_steps = [8, 16, 24]
 
 gd = 20  # clip gradient
 eval_freq = 3
 print_freq = 20
-num_worker = 4
+num_worker = 15
 num_seg = 16
 flag_biLSTM = True
 
@@ -168,11 +168,14 @@ class OMGDataset(Dataset):
 if __name__ == "__main__":
 
     test_list_path = "./support_tables/test_list_lstm.txt"
-    train_res_weights: str = "/Users/leonardoalchieri/Desktop/GIT/OMG-ADSC/pth_best/convnext_small/convnext_lstm_mseloss_NOPRETRAIN_29_0.1284_0.3563.pth"
     test_data_path: str = (
-        "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Test_Set/trimmed_faces"
+        "../Test_Set/trimmed_faces"
     )
+    
+    ground_truth_path: str = "./results/omg_TestVideos_WithLabels.csv"
+    # ground_truth_path: str = "./results/omg_ValidationVideos.csv"
 
+    train_res_weights: str = "./pth_best/convnext_small/convnext_lstm_mseloss_29_0.1301_0.2375.pth"
     model_name = "convnext_lstm_mseloss"
 
     device: str = "cuda" if use_cuda else ("mps" if use_mps else "cpu")
@@ -195,6 +198,6 @@ if __name__ == "__main__":
     )
 
     best_arou_ccc, best_vale_ccc = test(
-        test_loader, model, model_name, 0, reshape_mode=2
+        test_loader, model, model_name, 0, ground_truth_path=ground_truth_path, reshape_mode=2
     )
     print(best_arou_ccc, best_vale_ccc)

@@ -3,7 +3,6 @@ import sys
 from os.path import join as join_paths
 from sys import path
 
-import random
 import numpy as np
 import pandas as pd
 import torch
@@ -35,15 +34,15 @@ lr_steps = [8, 16, 24]
 gd = 20  # clip gradient
 eval_freq = 3
 print_freq = 18
-num_worker = 9
+num_worker = 4
 num_seg = 16
 flag_biLSTM = True
 
 classnum = 7
 correct_img_size = (112, 96, 3)
 
-model_name = 'sphereface20a_lstm_correcttanh_FINAL'
-loss_type = 'cccloss'
+model_name = "sphereface20a_lstm_correcttanh"
+loss_type = "cccloss"
 
 
 class Net(torch.nn.Module):
@@ -54,8 +53,16 @@ class Net(torch.nn.Module):
         self.tanh = torch.nn.Tanh()
         self.sigmoid = torch.nn.Sigmoid()
         self.avgPool = torch.nn.AvgPool2d((num_seg, 1), stride=1)
-        self.LSTM = torch.nn.LSTM(
-            backbone_output_size, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
+        # self.LSTM = torch.nn.LSTM(
+        #     backbone_output_size, 512, 1, batch_first=True, dropout=0.2, bidirectional=flag_biLSTM
+        # )
+        self.LSTM = torch.nn.GRU(
+            backbone_output_size,
+            512,
+            1,
+            batch_first=True,
+            dropout=0.2,
+            bidirectional=flag_biLSTM,
         )
         for name, param in self.LSTM.named_parameters():
             if "bias" in name:
@@ -90,14 +97,13 @@ class Net(torch.nn.Module):
         x = self.backbone(x)
         x = self.sequentialLSTM(x)
         x = self.linear(x)
-        # x = self.tanh(x)
+
         arousal = x[:, 0]
         valence = x[:, 1]
-        valence = self.tanh(valence)
-        arousal = self.sigmoid(arousal)
+        # valence = self.tanh(valence)
+        # arousal = self.sigmoid(arousal)
 
         return torch.stack([arousal, valence], dim=1)
-        # return x
 
 
 def printoneline(*argv):
@@ -137,7 +143,9 @@ def train(train_loader, model, criterion, optimizer, epoch):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda(non_blocking=True)
         elif use_mps:
-            inputs, targets = inputs.to("mps", non_blocking=False), targets.to("mps", non_blocking=False)
+            inputs, targets = inputs.to("mps", non_blocking=False), targets.to(
+                "mps", non_blocking=False
+            )
 
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
@@ -169,7 +177,7 @@ def train(train_loader, model, criterion, optimizer, epoch):
         batch_idx += 1
 
 
-def validate(val_loader, model, epoch, ground_truth_file: str):
+def validate(val_loader, model, criterion, epoch):
     model.eval()
 
     err_arou = 0.0
@@ -183,7 +191,9 @@ def validate(val_loader, model, epoch, ground_truth_file: str):
         if use_cuda:
             inputs, targets = inputs.cuda(), targets.cuda()
         elif use_mps:
-            inputs, targets = inputs.to("mps", non_blocking=False), targets.to("mps", non_blocking=False)
+            inputs, targets = inputs.to("mps", non_blocking=False), targets.to(
+                "mps", non_blocking=False
+            )
 
         inputs = torch.autograd.Variable(inputs)
         targets = torch.autograd.Variable(targets)
@@ -206,7 +216,7 @@ def validate(val_loader, model, epoch, ground_truth_file: str):
     txt_result.close()
 
     arouCCC, valeCCC = calculateCCC(
-        ground_truth_file,
+        "./results/omg_ValidationVideos.csv",
         "results/val_%s_%s_%d.csv" % (model_name, loss_type, epoch),
     )
     return (arouCCC, valeCCC)
@@ -272,25 +282,14 @@ class OMGDataset(Dataset):
 
 if __name__ == "__main__":
 
-    train_list_path = "./support_tables/train_validation_list.txt"
-    val_list_path = "./support_tables/test_list_lstm.txt"
-    ground_truth_file = "../omg_TestVideos_WithLabels.csv"
-    augmentation: bool = True
-    
-    train_data_path: str = (
-        "../Train_Validation_Set/trimmed_faces"
-    )
-    device: str = 'cuda' if use_cuda else ('mps' if use_mps else 'cpu')
-    validation_data_path: str = "../Test_Set/trimmed_faces"
-    
-    # set the seed for reproducibility
-    torch.manual_seed(696969)
-    torch.cuda.manual_seed(696969)
-    np.random.seed(696969)
-    random.seed(696969)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    
+    train_list_path = "./support_tables/train_list_lstm.txt"
+    val_list_path = "./support_tables/validation_list_lstm.txt"
+    augmentation: bool = False
+
+    train_data_path: str = "../Train_Set/trimmed_faces"
+    device: str = "cuda" if use_cuda else ("mps" if use_mps else "cpu")
+    validation_data_path: str = "../Validation_Set/trimmed_faces"
+
     model_path = "./model/sphere20a_20171020.pth"
     backbone = getattr(net_sphere, "sphere20a")()
     if augmentation:
@@ -300,21 +299,21 @@ if __name__ == "__main__":
     )
 
     model = Net(backbone, backbone_output_size=512)
-    # pretrained_path: str = "./pth_best/sphereface/sphereface20a_lstm_cccloss_14_0.3284_0.4344.pth"
-    # model.load_state_dict(torch.load(pretrained_path), strict=True)
 
     if use_cuda:
         model.cuda()
     elif use_mps:
         model.to("mps", non_blocking=False)
 
-    criterion = VALoss(loss_type='CCC', 
-                       digitize_num=1, 
-                       val_range=[-1,1], 
-                       aro_range=[0,1], 
-                       lambda_ccc=2,
-                       lambda_v=1,
-                       lambda_a=1)
+    criterion = VALoss(
+        loss_type="CCC",
+        digitize_num=1,
+        val_range=[-1, 1],
+        aro_range=[0, 1],
+        lambda_ccc=2,
+        lambda_v=1,
+        lambda_a=1,
+    )
 
     train_loader = DataLoader(
         OMGDataset(train_list_path, train_data_path),
@@ -331,7 +330,7 @@ if __name__ == "__main__":
 
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
 
-    best_arou_ccc, best_vale_ccc = validate(val_loader, model, 0, ground_truth_file)
+    best_arou_ccc, best_vale_ccc = validate(val_loader, model, criterion, 0)
 
     for epoch in tqdm(range(n_epoch), desc="Epoch"):
         if epoch in lr_steps:
@@ -344,7 +343,7 @@ if __name__ == "__main__":
 
         # evaluate on validation set
         if (epoch + 1) % eval_freq == 0 or epoch == n_epoch - 1:
-            arou_ccc, vale_ccc = validate(val_loader, model, epoch, ground_truth_file)
+            arou_ccc, vale_ccc = validate(val_loader, model, criterion, epoch)
 
             if (arou_ccc + vale_ccc) > (best_arou_ccc + best_vale_ccc):
                 best_arou_ccc = arou_ccc

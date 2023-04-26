@@ -26,14 +26,14 @@ use_cuda: bool = torch.cuda.is_available()
 use_mps = True
 
 lr = 0.01
-bs = 32
+bs = 16
 n_epoch = 30
 lr_steps = [8, 16, 24]
 
 gd = 20  # clip gradient
 eval_freq = 3
 print_freq = 18
-num_worker = 8
+num_worker = 16
 num_seg = 16
 flag_biLSTM = True
 
@@ -91,8 +91,9 @@ class Net(torch.nn.Module):
         
         arousal = x[:, 0]
         valence = x[:, 1]
-        # valence = self.tanh(valence)
-        # arousal = self.sigmoid(arousal)
+        valence = self.tanh(valence)
+        arousal = self.sigmoid(arousal)
+        # arousal = self.tanh(arousal)
 
         return torch.stack([arousal, valence], dim=1)
 
@@ -176,15 +177,15 @@ class OMGDataset(Dataset):
 
 if __name__ == "__main__":
 
-    test_list_path = "./support_tables/validation_list_lstm.txt"
+    test_list_path = "./support_tables/test_list_lstm.txt"
     test_data_path: str = (
-        "../Validation_Set/trimmed_faces"
+        "../Test_Set/trimmed_faces"
     )
-    # ground_truth_path: str = "./results/omg_TestVideos_WithLabels.csv"
-    ground_truth_path: str = "./results/omg_ValidationVideos.csv"
+    ground_truth_path: str = "./results/omg_TestVideos_WithLabels.csv"
+    # ground_truth_path: str = "./results/omg_ValidationVideos.csv"
 
-    train_res_weights: str = "./pth_best/sphereface/sphereface20a_lstm_cccloss_NOPRETRAIN_8_0.2794_0.3952.pth"
-    model_name: str = "sphereface20a_lstm_mseloss"
+    train_res_weights: str = "./pth_best/sphereface/sphereface20a_lstm_mseloss_29_0.2556_0.3768.pth"
+    model_name: str = "sphereface20a_lstm_correcttanh_mseloss"
     
     device: str = "cuda" if use_cuda else ("mps" if use_mps else "cpu")
     

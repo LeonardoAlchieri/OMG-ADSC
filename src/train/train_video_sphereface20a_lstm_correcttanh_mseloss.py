@@ -42,7 +42,7 @@ classnum = 7
 correct_img_size = (112, 96, 3)
 
 model_name = 'sphereface20a_lstm_correcttanh'
-loss_type = 'mseloss_NOPRETRAIN'
+loss_type = 'mseloss'
 
 
 class Net(torch.nn.Module):
@@ -92,8 +92,8 @@ class Net(torch.nn.Module):
         
         arousal = x[:, 0]
         valence = x[:, 1]
-        # valence = self.tanh(valence)
-        # arousal = self.sigmoid(arousal)
+        valence = self.tanh(valence)
+        arousal = self.sigmoid(arousal)
 
         return torch.stack([arousal, valence], dim=1)
 
@@ -272,13 +272,14 @@ if __name__ == "__main__":
 
     train_list_path = "./support_tables/train_list_lstm.txt"
     val_list_path = "./support_tables/validation_list_lstm.txt"
-    augmentation: bool = False
+    augmentation: bool = True
     
     train_data_path: str = (
         "../Train_Set/trimmed_faces"
     )
-    device: str = 'cuda' if use_cuda else ('mps' if use_mps else 'cpu')
     validation_data_path: str = "../Validation_Set/trimmed_faces"
+    
+    device: str = 'cuda' if use_cuda else ('mps' if use_mps else 'cpu')
     
     model_path = "./model/sphere20a_20171020.pth"
     backbone = getattr(net_sphere, "sphere20a")()

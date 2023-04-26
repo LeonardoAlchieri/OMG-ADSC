@@ -33,7 +33,7 @@ lr_steps = [8, 16, 24]
 gd = 20  # clip gradient
 eval_freq = 3
 print_freq = 20
-num_worker = 1
+num_worker = 10
 num_seg = 16
 flag_biLSTM = True
 
@@ -169,12 +169,16 @@ class OMGDataset(Dataset):
 if __name__ == "__main__":
 
     test_list_path = "./support_tables/test_list_lstm.txt"
-    train_res_weights: str = "/Users/leonardoalchieri/Desktop/GIT/OMG-ADSC/pth_best/resnet50/facebval_lstm_ccclosss_NOPRETRAIN_11_0.2203_0.3628.pth"
+    test_data_path: str = "../Test_Set/trimmed_faces"
+    
+    ground_truth_path: str = "./results/omg_TestVideos_WithLabels.csv"
+    # ground_truth_path: str = "./results/omg_ValidationVideos.csv"
+    
+    train_res_weights: str = "./pth_best/resnet50/facebval_lstm_ccclosss_NOPRETRAIN_11_0.2203_0.3628.pth"
+    model_name = "facebval_lstm_cccloss_NOPRETRAIN"
     
     device: str = 'cuda' if use_cuda else ('mps' if use_mps else 'cpu')
-    test_data_path: str = "/Users/leonardoalchieri/Datasets/OMGEmotionChallenge/Test_Set/trimmed_faces"
     
-    model_name = "facebval_lstm_cccloss"
     backbone = facebval(loading_device=device)
 
     model = Net(backbone)
@@ -192,5 +196,5 @@ if __name__ == "__main__":
         num_workers=num_worker,
     )
 
-    best_arou_ccc, best_vale_ccc = test(test_loader, model, model_name, 0)
+    best_arou_ccc, best_vale_ccc = test(test_loader, model, model_name, 0, ground_truth_path=ground_truth_path, reshape_mode=1)
     print(best_arou_ccc, best_vale_ccc)

@@ -33,7 +33,7 @@ lr_steps = [8, 16, 24]
 gd = 20  # clip gradient
 eval_freq = 3
 print_freq = 20
-num_worker = 10
+num_worker = 16
 num_seg = 16
 flag_biLSTM = True
 
@@ -168,11 +168,15 @@ class OMGDataset(Dataset):
 if __name__ == "__main__":
 
     test_list_path = "./support_tables/test_list_lstm.txt"
-    train_res_weights: str = "./pth_best/dan/dan_lstm_corecttanh_mseloss_26_0.2400_0.3399.pth"
+    
     test_data_path: str = (
         "../Test_Set/trimmed_faces"
     )
+    
+    ground_truth_path: str = "./results/omg_TestVideos_WithLabels.csv"
+    # ground_truth_path: str = "./results/omg_ValidationVideos.csv"
 
+    train_res_weights: str = "./pth_best/dan/dan_lstm_corecttanh_mseloss_26_0.2400_0.3399.pth"
     model_name: str = "dan_lstm_correcttanh_mseloss"
 
     device: str = "cuda" if use_cuda else ("mps" if use_mps else "cpu")
@@ -194,6 +198,6 @@ if __name__ == "__main__":
     )
 
     best_arou_ccc, best_vale_ccc = test(
-        test_loader, model, model_name, 0, reshape_mode=1
+        test_loader, model, model_name, 0, ground_truth_path=ground_truth_path, reshape_mode=1
     )
     print(best_arou_ccc, best_vale_ccc)
